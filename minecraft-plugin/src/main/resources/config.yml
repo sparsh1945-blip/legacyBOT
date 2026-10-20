@@ -1,0 +1,5 @@
+api-base-url: "http://127.0.0.1:8787"
+# Replace this with the same strong random token configured in the API .env.
+api-token: "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+link-code-expiry-seconds: 300
+stats-sync-interval-seconds: 60

@@ -1,0 +1,15 @@
+name: SneakSMPBridge
+version: 1.0.0
+main: com.sneaksmp.bridge.SneakSMPBridge
+api-version: '1.21'
+softdepend: [Vault, Essentials, LiteBans]
+commands:
+  discordlink:
+    description: Generate a one-time Discord linking code
+    usage: /discordlink
+  sneaksmp:
+    description: SneakSMP Bridge administration
+    usage: /sneaksmp reload
+permissions:
+  sneaksmp.admin:
+    default: op
