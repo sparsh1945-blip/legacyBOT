@@ -1,388 +1,625 @@
 
 import 'dotenv/config';
+
 import {
   Client,
   GatewayIntentBits,
-  EmbedBuilder
+  EmbedBuilder,
+  ChannelType,
+  PermissionFlagsBits
 } from 'discord.js';
 
 import { app } from './api.js';
 import { players, links, coins } from './store.js';
 
 const token = process.env.DISCORD_TOKEN;
+const apiToken = process.env.API_TOKEN;
 const port = Number(process.env.PORT || 8787);
 
-if (!token || !process.env.API_TOKEN) {
-  throw new Error('Set DISCORD_TOKEN and API_TOKEN in your environment');
+if (!token || !apiToken) {
+  throw new Error('Set DISCORD_TOKEN and API_TOKEN in your environment.');
 }
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-const base = `http://127.0.0.1:${port}`;
+const server = app.listen(port, '0.0.0.0', () => {
+  console.log(`SneakSMP API listening on ${port}`);
+});
 
-async function api(path, method = 'GET', body) {
-  const response = await fetch(base + path, {
+server.on('error', error => {
+  console.error('API server failed:', error.message);
+});
+
+// --------------------------------------------------
+// API HELPER
+// --------------------------------------------------
+
+const apiBase = (
+  process.env.API_BASE_URL ||
+  `http://127.0.0.1:${port}`
+).replace(/\/+$/, '');
+
+async function api(path, method = 'GET', body = undefined) {
+  const response = await fetch(`${apiBase}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${process.env.API_TOKEN}`,
-      'Content-Type': 'application/json'
+      Authorization: `Bearer ${apiToken}`,
+      ...(body !== undefined
+        ? { 'Content-Type': 'application/json' }
+        : {})
     },
-    ...(body ? { body: JSON.stringify(body) } : {})
+    ...(body !== undefined
+      ? { body: JSON.stringify(body) }
+      : {}),
+    signal: AbortSignal.timeout(15000)
   });
 
-  const data = await response.json().catch(() => ({}));
+  const text = await response.text();
+  let data = {};
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { error: text || 'Invalid API response' };
+  }
 
   if (!response.ok) {
-    throw new Error(data.error || `API HTTP ${response.status}`);
+    throw new Error(
+      data.error || `API request failed (${response.status})`
+    );
   }
 
   return data;
 }
 
-function envIds(name) {
+// --------------------------------------------------
+// PERMISSIONS
+// Configure comma-separated IDs in environment variables.
+// --------------------------------------------------
+
+function parseIds(name) {
   return (process.env[name] || '')
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
 }
 
-async function hasStaffPermission(interaction, permission) {
-  const ownerOrDev =
-    envIds('OWNER_IDS').includes(interaction.user.id) ||
-    envIds('DEVELOPER_IDS').includes(interaction.user.id);
-
-  const roleEnvNames = permission === 'moderation'
-    ? ['ADMIN_ROLE_IDS', 'MOD_ROLE_IDS']
-    : ['OWNER_ROLE_IDS', 'DEVELOPER_ROLE_IDS', 'ADMIN_ROLE_IDS'];
-
-  const roleIds = roleEnvNames.flatMap(envIds);
-
-  if (ownerOrDev) return true;
-
-  if (!interaction.guild) return false;
-
-  try {
-    const member = await interaction.guild.members.fetch(
-      interaction.user.id
+function isOwner(interaction) {
+  return parseIds('OWNER_IDS').includes(interaction.user.id) ||
+    parseIds('OWNER_ROLE_IDS').some(id =>
+      interaction.member?.roles?.cache?.has(id)
     );
-
-    return member.roles.cache.some(role => roleIds.includes(role.id));
-  } catch {
-    return false;
-  }
 }
 
-async function deny(interaction) {
+function isDeveloper(interaction) {
+  return parseIds('DEVELOPER_IDS').includes(interaction.user.id) ||
+    parseIds('DEVELOPER_ROLE_IDS').some(id =>
+      interaction.member?.roles?.cache?.has(id)
+    );
+}
+
+function isAdmin(interaction) {
+  return isOwner(interaction) ||
+    isDeveloper(interaction) ||
+    parseIds('ADMIN_ROLE_IDS').some(id =>
+      interaction.member?.roles?.cache?.has(id)
+    ) ||
+    interaction.memberPermissions?.has(
+      PermissionFlagsBits.Administrator
+    );
+}
+
+function isModerator(interaction) {
+  return isAdmin(interaction) ||
+    parseIds('MOD_ROLE_IDS').some(id =>
+      interaction.member?.roles?.cache?.has(id)
+    );
+}
+
+async function deny(interaction, message = 'You do not have permission to use this command.') {
   return interaction.reply({
-    content: 'You do not have permission to use this command.',
+    content: message,
     ephemeral: true
   });
 }
 
-function findPlayer(username) {
-  const query = username.toLowerCase();
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
 
-  return Object.values(players.all()).find(
-    player => player.uuid &&
-      player.uuid !== '__server__' &&
-      player.username?.toLowerCase() === query
-  );
+function getString(interaction, ...names) {
+  for (const name of names) {
+    const value = interaction.options.getString(name);
+    if (value !== null) return value;
+  }
+
+  return null;
 }
+
+function getInteger(interaction, ...names) {
+  for (const name of names) {
+    const value = interaction.options.getInteger(name);
+    if (value !== null) return value;
+  }
+
+  return null;
+}
+
+function findPlayer(name) {
+  if (!name) return null;
+
+  const all = Object.values(players.all());
+
+  return all.find(player =>
+    player.username?.toLowerCase() === name.toLowerCase()
+  ) || null;
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString('en-US');
+}
+
+function errorMessage(error) {
+  console.error(error);
+  return `Something went wrong: ${error.message || 'Unknown error'}`;
+}
+
+async function replyError(interaction, error) {
+  const message = errorMessage(error);
+
+  if (interaction.deferred || interaction.replied) {
+    return interaction.followUp({
+      content: message,
+      ephemeral: true
+    }).catch(() => {});
+  }
+
+  return interaction.reply({
+    content: message,
+    ephemeral: true
+  }).catch(() => {});
+}
+
+function linkedAccount(discordId) {
+  return links.get(discordId);
+}
+
+// --------------------------------------------------
+// BOT READY
+// --------------------------------------------------
+
+client.once('clientReady', () => {
+  console.log(`Discord bot logged in as ${client.user.tag}`);
+});
+
+// --------------------------------------------------
+// SLASH COMMAND HANDLER
+// Commands must also exist in commands.js and be deployed.
+// --------------------------------------------------
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    const name = interaction.commandName;
+  const command = interaction.commandName;
 
-    // PUBLIC HELP
-    if (name === 'help') {
+  try {
+    // ----------------------------------------------
+    // /help
+    // ----------------------------------------------
+
+    if (command === 'help') {
       const embed = new EmbedBuilder()
-        .setTitle('LegacyMC • Command Help')
-        .setColor(0x5865f2)
-        .setDescription([
-          '**Account commands**',
-          '`/minelink` `/mineunlink` `/mineaccount`',
-          '',
-          '**Stats and coins**',
-          '`/minestats` `/mineleaderboard` `/minebalance`',
-          '',
-          '**Staff commands**',
-          '`/announce` `/addcoin` `/takecoin`',
-          '`/givecoins` `/takecoins`',
-          '`/minekick` `/mineban` `/minetempban` `/mineunban`',
-          '',
-          '**Server**',
-          '`/minestatus`',
-          '',
-          'Staff commands require configured permissions.'
-        ].join('\n'));
+        .setColor(0x2ecc71)
+        .setTitle('LegacyMC Commands')
+        .setDescription('Available commands for the LegacyMC Minecraft community.')
+        .addFields(
+          {
+            name: 'Account linking',
+            value: '`/minelink` · `/mineunlink` · `/mineaccount`'
+          },
+          {
+            name: 'Stats and economy',
+            value: '`/minestats` · `/mineleaderboard` · `/minebalance`'
+          },
+          {
+            name: 'Staff commands',
+            value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`'
+          },
+          {
+            name: 'Moderation and status',
+            value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`'
+          }
+        )
+        .setFooter({ text: 'LegacyMC • SneakSMP Bridge' });
+
+      return interaction.reply({
+        embeds: [embed],
+        ephemeral: true
+      });
+    }
+
+    // ----------------------------------------------
+    // /announce
+    // Adds announcement to Minecraft queue.
+    // Optional Discord channel receives an embed too.
+    // ----------------------------------------------
+
+    if (command === 'announce') {
+      if (!isAdmin(interaction)) {
+        return deny(interaction);
+      }
+
+      const message = getString(interaction, 'message');
+
+      if (!message?.trim() || message.length > 1000) {
+        return interaction.reply({
+          content: 'Provide an announcement between 1 and 1000 characters.',
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const result = await api('/v1/announcements', 'POST', {
+        message: message.trim(),
+        actor: interaction.user.id
+      });
+
+      const channel = interaction.options.getChannel('channel');
+
+      if (
+        channel &&
+        channel.type === ChannelType.GuildText &&
+        channel.isTextBased()
+      ) {
+        const embed = new EmbedBuilder()
+          .setColor(0x2ecc71)
+          .setTitle('📢 LegacyMC Announcement')
+          .setDescription(message.trim())
+          .setFooter({ text: 'LegacyMC • Official Announcement' })
+          .setTimestamp();
+
+        await channel.send({ embeds: [embed] });
+      }
+
+      return interaction.editReply(
+        `Announcement queued for Minecraft. ID: \`${result.id}\``
+      );
+    }
+
+    // ----------------------------------------------
+    // /minelink
+    // Player gets a code in Minecraft using /discordlink.
+    // ----------------------------------------------
+
+    if (command === 'minelink') {
+      const code = getString(interaction, 'code');
+
+      if (!code || !/^\d{6}$/.test(code)) {
+        return interaction.reply({
+          content: 'Enter the six-digit code provided in Minecraft by `/discordlink`.',
+          ephemeral: true
+        });
+      }
+
+      const result = await api('/v1/links/verify', 'POST', {
+        code,
+        discordId: interaction.user.id
+      });
+
+      return interaction.reply({
+        content: `Your Minecraft account **${result.link.username}** is now linked to Discord.`,
+        ephemeral: true
+      });
+    }
+
+    // ----------------------------------------------
+    // /mineunlink
+    // ----------------------------------------------
+
+    if (command === 'mineunlink') {
+      const account = linkedAccount(interaction.user.id);
+
+      if (!account) {
+        return interaction.reply({
+          content: 'You do not have a linked Minecraft account.',
+          ephemeral: true
+        });
+      }
+
+      await api(
+        `/v1/links/${interaction.user.id}`,
+        'DELETE'
+      );
+
+      return interaction.reply({
+        content: 'Your Minecraft account has been unlinked.',
+        ephemeral: true
+      });
+    }
+
+    // ----------------------------------------------
+    // /mineaccount
+    // ----------------------------------------------
+
+    if (command === 'mineaccount') {
+      const account = linkedAccount(interaction.user.id);
+
+      if (!account) {
+        return interaction.reply({
+          content: 'No Minecraft account linked. Use `/minelink` with the code from Minecraft.',
+          ephemeral: true
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x3498db)
+        .setTitle('Linked Minecraft Account')
+        .addFields(
+          { name: 'Username', value: account.username || 'Unknown', inline: true },
+          { name: 'UUID', value: account.uuid || 'Unknown', inline: true }
+        );
+
+      return interaction.reply({
+        embeds: [embed],
+        ephemeral: true
+      });
+    }
+
+    // ----------------------------------------------
+    // /mineleaderboard
+    // ----------------------------------------------
+
+    if (command === 'mineleaderboard') {
+      const type = getString(interaction, 'type') || 'kills';
+
+      if (!['kills', 'deaths', 'money', 'playtime', 'coins'].includes(type)) {
+        return interaction.reply({
+          content: 'Choose kills, deaths, money, playtime, or coins.',
+          ephemeral: true
+        });
+      }
+
+      const result = await api(
+        `/v1/leaderboards/${encodeURIComponent(type)}`
+      );
+
+      const rows = result.rows || [];
+
+      const description = rows.length
+        ? rows.map((player, index) => {
+            const value = type === 'playtime'
+              ? `${formatNumber(Math.floor((player.playtimeTicks || 0) / 20))} seconds`
+              : formatNumber(player[type]);
+
+            return `**${index + 1}. ${player.username || 'Unknown'}** — ${value}`;
+          }).join('\n')
+        : 'No player stats are available yet.';
+
+      const embed = new EmbedBuilder()
+        .setColor(0xf1c40f)
+        .setTitle(`LegacyMC ${type} leaderboard`)
+        .setDescription(description);
 
       return interaction.reply({ embeds: [embed] });
     }
 
-    // ANNOUNCEMENT: STAFF ONLY
-    if (name === 'announce') {
-      if (!await hasStaffPermission(interaction, 'staff')) {
-        return deny(interaction);
+    // ----------------------------------------------
+    // /minestats
+    // ----------------------------------------------
+
+    if (command === 'minestats') {
+      const name = getString(interaction, 'player', 'username');
+
+      let player;
+
+      if (name) {
+        player = findPlayer(name);
+      } else {
+        const account = linkedAccount(interaction.user.id);
+        player = account ? players.get(account.uuid) : null;
       }
-
-      await interaction.deferReply({ ephemeral: true });
-
-      const message = interaction.options.getString('message', true);
-      const channel = interaction.options.getChannel('channel');
-
-      // Queue announcement for the Minecraft plugin.
-      const result = await api('/v1/announcements', 'POST', {
-        message,
-        actor: interaction.user.id
-      });
-
-      let discordPosted = false;
-
-      // Optional Discord channel.
-      if (channel) {
-        try {
-          await channel.send({
-            embeds: [
-              new EmbedBuilder()
-                .setTitle('📢 LegacyMC Announcement')
-                .setDescription(message)
-                .setColor(0x36b37e)
-                .setFooter({ text: `Posted by ${interaction.user.username}` })
-                .setTimestamp()
-            ]
-          });
-
-          discordPosted = true;
-        } catch {
-          return interaction.editReply(
-            `The Minecraft announcement was queued (ID: ${result.id}), ` +
-            'but I could not post in the selected Discord channel. ' +
-            'Check the bot’s channel permissions.'
-          );
-        }
-      }
-
-      return interaction.editReply(
-        '✅ Announcement queued for Minecraft.' +
-        (channel
-          ? (discordPosted ? ' Also posted in Discord.' : '')
-          : ' No Discord channel was selected.')
-      );
-    }
-
-    // NEW COIN COMMANDS AND EXISTING ALIASES
-    if (['addcoin', 'takecoin', 'givecoins', 'takecoins'].includes(name)) {
-      if (!await hasStaffPermission(interaction, 'staff')) {
-        return deny(interaction);
-      }
-
-      await interaction.deferReply({ ephemeral: true });
-
-      const username = interaction.options.getString('player', true);
-      const player = findPlayer(username);
-
-      if (!player) {
-        return interaction.editReply(
-          'Player not found. They must join the Minecraft server at least once.'
-        );
-      }
-
-      const amount = interaction.options.getInteger('amount', true);
-      const adding = name === 'addcoin' || name === 'givecoins';
-      const signedAmount = adding ? amount : -amount;
-      const reason = interaction.options.getString('reason', true);
-
-      const result = await api('/v1/coins/adjust', 'POST', {
-        uuid: player.uuid,
-        amount: signedAmount,
-        actor: interaction.user.id,
-        reason
-      });
-
-      return interaction.editReply(
-        `${adding ? 'Added' : 'Removed'} ${amount} coins for **${player.username}**. ` +
-        `New balance: **${result.balance}** coins.\nReason: ${reason}`
-      );
-    }
-
-    // LINK ACCOUNT
-    if (name === 'minelink') {
-      await interaction.deferReply({ ephemeral: true });
-
-      const result = await api('/v1/links/verify', 'POST', {
-        code: interaction.options.getString('code', true),
-        discordId: interaction.user.id
-      });
-
-      return interaction.editReply(
-        `Linked successfully to Minecraft account **${result.link.username}**.`
-      );
-    }
-
-    if (name === 'mineunlink') {
-      await api(`/v1/links/${interaction.user.id}`, 'DELETE');
-
-      return interaction.reply({
-        content: 'Your account link was removed.',
-        ephemeral: true
-      });
-    }
-
-    if (name === 'mineaccount') {
-      const result = await api(`/v1/links/${interaction.user.id}`);
-
-      return interaction.reply({
-        content: result.link
-          ? `Linked Minecraft account: **${result.link.username}**`
-          : 'No Minecraft account linked.',
-        ephemeral: true
-      });
-    }
-
-    // LEADERBOARD
-    if (name === 'mineleaderboard') {
-      await interaction.deferReply();
-
-      const type = interaction.options.getString('type', true);
-      const result = await api(`/v1/leaderboards/${type}`);
-
-      const lines = result.rows.map((player, index) => {
-        const value = type === 'playtime'
-          ? `${Math.floor((player.playtimeTicks || 0) / 20 / 60)} min`
-          : player[type];
-
-        return `${index + 1}. **${player.username}** — ${value}`;
-      }).join('\n') || 'No data recorded yet.';
-
-      return interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle(`LegacyMC • ${type} leaderboard`)
-            .setDescription(lines)
-            .setColor(0x36b37e)
-        ]
-      });
-    }
-
-    // COIN BALANCE
-    if (name === 'minebalance') {
-      const link = links.get(interaction.user.id);
-
-      if (!link) {
-        return interaction.reply({
-          content: 'Link your account first using `/discordlink` in Minecraft and `/minelink` in Discord.',
-          ephemeral: true
-        });
-      }
-
-      return interaction.reply({
-        content: `Community coins: **${coins.get(link.uuid)}**`,
-        ephemeral: true
-      });
-    }
-
-    // PLAYER STATS
-    if (name === 'minestats') {
-      const username = interaction.options.getString('player', true);
-      const player = findPlayer(username);
 
       if (!player) {
         return interaction.reply({
-          content: 'No stats found. The player must join after the plugin is installed.',
+          content: 'Player stats were not found. The player may need to join the server first.',
           ephemeral: true
         });
       }
 
       const embed = new EmbedBuilder()
-        .setTitle(`Stats • ${player.username}`)
+        .setColor(0x3498db)
+        .setTitle(`${player.username || 'Player'} — Stats`)
         .addFields(
-          { name: 'Kills', value: String(player.kills || 0), inline: true },
-          { name: 'Deaths', value: String(player.deaths || 0), inline: true },
+          { name: 'Kills', value: formatNumber(player.kills), inline: true },
+          { name: 'Deaths', value: formatNumber(player.deaths), inline: true },
           {
             name: 'Playtime',
-            value: `${Math.floor((player.playtimeTicks || 0) / 20 / 3600)} hours`,
+            value: `${formatNumber(Math.floor((player.playtimeTicks || 0) / 20))} seconds`,
             inline: true
           },
           {
             name: 'Money',
-            value: player.money == null ? 'Unavailable' : String(player.money),
+            value: player.money == null ? 'Not available' : formatNumber(player.money),
             inline: true
           },
           {
-            name: 'Community coins',
-            value: String(coins.get(player.uuid)),
+            name: 'Coins',
+            value: formatNumber(coins.get(player.uuid)),
             inline: true
           }
-        )
-        .setColor(0x5865f2);
+        );
 
       return interaction.reply({ embeds: [embed] });
     }
 
-    // MODERATION REQUESTS
-    if (['minekick', 'mineban', 'minetempban', 'mineunban'].includes(name)) {
-      if (!await hasStaffPermission(interaction, 'moderation')) {
-        return deny(interaction);
+    // ----------------------------------------------
+    // /minebalance
+    // ----------------------------------------------
+
+    if (command === 'minebalance') {
+      const account = linkedAccount(interaction.user.id);
+
+      if (!account) {
+        return interaction.reply({
+          content: 'Link your Minecraft account first using `/minelink`.',
+          ephemeral: true
+        });
       }
 
-      await interaction.deferReply({ ephemeral: true });
-
-      const body = {
-        type: {
-          minekick: 'kick',
-          mineban: 'ban',
-          minetempban: 'tempban',
-          mineunban: 'unban'
-        }[name],
-        player: interaction.options.getString('player', true),
-        reason: interaction.options.getString('reason', true),
-        hours: interaction.options.getInteger('hours'),
-        actor: interaction.user.id
-      };
-
-      const result = await api('/v1/moderation', 'POST', body);
-
-      return interaction.editReply(
-        `Request **${result.id}** was recorded as **${result.status}**. ` +
-        'This starter records moderation requests but does not execute them in Minecraft.'
-      );
-    }
-
-    // SERVER STATUS
-    if (name === 'minestatus') {
-      const server = players.get('__server__');
-
       return interaction.reply({
-        content: server
-          ? `Last heartbeat: ${Math.floor((Date.now() - server.heartbeat) / 1000)} seconds ago · Online: ${server.online}/${server.max}`
-          : 'No server heartbeat received yet.',
+        content: `**${account.username}** has **${formatNumber(coins.get(account.uuid))} coins**.`,
         ephemeral: true
       });
     }
-  } catch (error) {
-    const message = `Error: ${error.message}`.slice(0, 1800);
 
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(message).catch(() => {});
-    } else {
-      await interaction.reply({
-        content: message,
+    // ----------------------------------------------
+    // /addcoin, /takecoin, /givecoins, /takecoins
+    // ----------------------------------------------
+
+    if (['addcoin', 'takecoin', 'givecoins', 'takecoins'].includes(command)) {
+      if (!isAdmin(interaction)) {
+        return deny(interaction);
+      }
+
+      const playerName = getString(interaction, 'player', 'username');
+      const amount = getInteger(interaction, 'amount');
+      const reason = getString(interaction, 'reason');
+
+      if (!playerName || !amount || amount < 1 || !reason || reason.trim().length < 2) {
+        return interaction.reply({
+          content: 'Provide a player, a positive amount, and a reason.',
+          ephemeral: true
+        });
+      }
+
+      const player = findPlayer(playerName);
+
+      if (!player) {
+        return interaction.reply({
+          content: `Could not find Minecraft player **${playerName}**. They may need to join the server first.`,
+          ephemeral: true
+        });
+      }
+
+      const subtract = ['takecoin', 'takecoins'].includes(command);
+
+      const result = await api('/v1/coins/adjust', 'POST', {
+        uuid: player.uuid,
+        amount: subtract ? -amount : amount,
+        actor: interaction.user.id,
+        reason: reason.trim()
+      });
+
+      return interaction.reply({
+        content: `Updated **${player.username}**'s coins by ${subtract ? '-' : '+'}${formatNumber(amount)}. New balance: **${formatNumber(result.balance)}**.`,
         ephemeral: true
-      }).catch(() => {});
+      });
     }
+
+    // ----------------------------------------------
+    // Moderation commands
+    // These only queue/log a request in the current API.
+    // They do not yet execute Minecraft commands.
+    // ----------------------------------------------
+
+    if (['minekick', 'mineban', 'minetempban', 'mineunban'].includes(command)) {
+      if (!isModerator(interaction)) {
+        return deny(interaction);
+      }
+
+      const player = getString(interaction, 'player', 'username');
+      const reason = getString(interaction, 'reason') || 'No reason provided';
+      const hours = getInteger(interaction, 'hours');
+
+      const typeMap = {
+        minekick: 'kick',
+        mineban: 'ban',
+        minetempban: 'tempban',
+        mineunban: 'unban'
+      };
+
+      if (!player) {
+        return interaction.reply({
+          content: 'Provide the Minecraft player name.',
+          ephemeral: true
+        });
+      }
+
+      if (command === 'minetempban' && (!hours || hours < 1)) {
+        return interaction.reply({
+          content: 'Provide a positive ban duration in hours.',
+          ephemeral: true
+        });
+      }
+
+      const result = await api('/v1/moderation', 'POST', {
+        type: typeMap[command],
+        player,
+        reason,
+        hours,
+        actor: interaction.user.id
+      });
+
+      return interaction.reply({
+        content: `Moderation request recorded for **${player}** (ID: \`${result.id}\`). **This request is not executed in Minecraft yet.**`,
+        ephemeral: true
+      });
+    }
+
+    // ----------------------------------------------
+    // /minestatus
+    // ----------------------------------------------
+
+    if (command === 'minestatus') {
+      const serverInfo = players.get('__server__');
+
+      if (!serverInfo?.heartbeat) {
+        return interaction.reply({
+          content: 'Server status is not available yet. Waiting for a plugin heartbeat.',
+          ephemeral: true
+        });
+      }
+
+      const ageSeconds = Math.floor(
+        (Date.now() - serverInfo.heartbeat) / 1000
+      );
+
+      const online = ageSeconds <= 120;
+
+      const embed = new EmbedBuilder()
+        .setColor(online ? 0x2ecc71 : 0xe74c3c)
+        .setTitle('LegacyMC Server Status')
+        .setDescription(online ? '🟢 Server heartbeat is active' : '🔴 Server heartbeat is stale')
+        .addFields(
+          { name: 'Last heartbeat', value: `${ageSeconds} seconds ago`, inline: true }
+        );
+
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    // ----------------------------------------------
+    // Unknown command
+    // ----------------------------------------------
+
+    return interaction.reply({
+      content: 'This command is not handled by the current bot code.',
+      ephemeral: true
+    });
+
+  } catch (error) {
+    await replyError(interaction, error);
   }
 });
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`SneakSMP API listening on ${port}`);
-});
+// --------------------------------------------------
+// START DISCORD BOT
+// --------------------------------------------------
 
-client.once('ready', () => {
-  console.log(`Discord bot logged in as ${client.user.tag}`);
+client.login(token).catch(error => {
+  console.error('Discord login failed:', error);
+  server.close();
+  process.exitCode = 1;
 });
-
-client.login(token);

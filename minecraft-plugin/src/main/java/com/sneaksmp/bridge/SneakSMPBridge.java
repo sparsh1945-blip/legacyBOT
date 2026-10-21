@@ -1,7 +1,9 @@
 
 package com.sneaksmp.bridge;
 
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.milkbowl.vault.economy.Economy;
+
 import org.bukkit.Bukkit;
 import org.bukkit.Statistic;
 import org.bukkit.command.Command;
@@ -21,15 +23,40 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public final class SneakSMPBridge extends JavaPlugin implements Listener {
+public final class SneakSMPBridge extends JavaPlugin
+        implements Listener {
+
+    private static final Pattern UUID_PATTERN = Pattern.compile(
+            "^[0-9a-fA-F-]{36}$"
+    );
+
+    private static final Pattern PLAYER_NAME_PATTERN = Pattern.compile(
+            "^[A-Za-z0-9_]{1,16}$"
+    );
+
+    private static final Pattern CODE_PATTERN = Pattern.compile(
+            "\"code\"\\s*:\\s*\"(\\d{6})\""
+    );
+
+    private static final Pattern MESSAGE_PATTERN = Pattern.compile(
+            "\"messageB64\"\\s*:\\s*\"([A-Za-z0-9+/=]+)\""
+    );
+
+    private static final LegacyComponentSerializer LEGACY_SERIALIZER =
+            LegacyComponentSerializer.legacyAmpersand();
 
     private HttpClient http;
     private Economy economy;
+
+    private final AtomicBoolean announcementPollRunning =
+            new AtomicBoolean(false);
 
     @Override
     public void onEnable() {
@@ -40,7 +67,6 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                 .build();
 
         setupEconomy();
-
         getServer().getPluginManager().registerEvents(this, this);
 
         long interval = Math.max(
@@ -48,13 +74,21 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                 getConfig().getLong("stats-sync-interval-seconds", 60L)
         );
 
-        // Collect Bukkit data on the main thread.
-        // Network requests are sent asynchronously by post().
+        // Bukkit player data is collected on the main thread.
+        // API requests are made asynchronously.
         getServer().getScheduler().runTaskTimer(
                 this,
                 this::syncOnlineStats,
                 100L,
                 interval * 20L
+        );
+
+        // Poll the authenticated API every five seconds.
+        getServer().getScheduler().runTaskTimerAsynchronously(
+                this,
+                this::pollAnnouncement,
+                100L,
+                100L
         );
 
         String base = getConfig().getString("api-base-url", "");
@@ -69,7 +103,7 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
-        // No background executor needs to be shut down.
+        // Bukkit cancels this plugin's scheduled tasks automatically.
     }
 
     private void setupEconomy() {
@@ -88,9 +122,7 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
             economy = provider.getProvider();
             getLogger().info("Vault economy hooked successfully.");
         } else {
-            getLogger().info(
-                    "No Vault economy provider found."
-            );
+            getLogger().info("No Vault economy provider found.");
         }
     }
 
@@ -198,14 +230,14 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                         body
                 );
 
-                String code = extract(response, "code");
+                String code = extract(response, CODE_PATTERN);
 
                 Bukkit.getScheduler().runTask(this, () -> {
                     if (!player.isOnline()) {
                         return;
                     }
 
-                    if (code != null && code.matches("\\d{6}")) {
+                    if (code != null) {
                         player.sendMessage(
                                 "§aYour Discord link code: §e" + code
                         );
@@ -221,6 +253,9 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                         );
                     }
                 });
+            }).exceptionally(error -> {
+                getLogger().warning("Link-code task failed.");
+                return null;
             });
 
             return true;
@@ -254,6 +289,76 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                     );
                     return null;
                 });
+    }
+
+    /**
+     * Fetches one queued announcement.
+     *
+     * Network work happens asynchronously. Bukkit broadcasts are
+     * scheduled back onto the main server thread.
+     */
+    private void pollAnnouncement() {
+        if (!isEnabled()
+                || !announcementPollRunning.compareAndSet(false, true)) {
+            return;
+        }
+
+        try {
+            String response = request(
+                    "GET",
+                    "/v1/announcements/next",
+                    null
+            );
+
+            if (response.isBlank()) {
+                return;
+            }
+
+            String encoded = extract(response, MESSAGE_PATTERN);
+
+            // An empty queue returns {"announcement":null}.
+            if (encoded == null || encoded.isBlank()) {
+                return;
+            }
+
+            final String message;
+
+            try {
+                message = new String(
+                        Base64.getDecoder().decode(encoded),
+                        StandardCharsets.UTF_8
+                );
+            } catch (IllegalArgumentException exception) {
+                getLogger().warning(
+                        "Announcement contained invalid Base64 data."
+                );
+                return;
+            }
+
+            if (message.isBlank()) {
+                return;
+            }
+
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (!isEnabled()) {
+                    return;
+                }
+
+                Bukkit.broadcast(
+                        LEGACY_SERIALIZER.deserialize(
+                                "&8[&aLegacyMC&8] &f" + message
+                        )
+                );
+            });
+
+        } catch (Exception exception) {
+            getLogger().warning(
+                    "Could not process announcement: "
+                            + exception.getClass().getSimpleName()
+            );
+        } finally {
+            announcementPollRunning.set(false);
+        }
     }
 
     private String request(String method, String path, String body) {
@@ -317,42 +422,39 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                     : response.body();
 
             if (status < 200 || status >= 300) {
-                // Never log the Authorization header or token.
                 getLogger().warning(
                         "API request failed: " + method + " " + path
                                 + " returned HTTP " + status
                                 + ". Response: "
                                 + responseBody.substring(
                                         0,
-                                        Math.min(responseBody.length(), 500)
+                                        Math.min(responseBody.length(), 300)
                                 )
                 );
                 return "";
             }
 
-            getLogger().info(
-                    "API request successful: " + path
-                            + " (HTTP " + status + ")"
-            );
+            // Avoid logging every empty announcement poll.
+            if (!path.equals("/v1/announcements/next")
+                    || !responseBody.contains("\"announcement\":null")) {
+                getLogger().fine(
+                        "API request successful: " + path
+                                + " (HTTP " + status + ")"
+                );
+            }
 
             return responseBody;
 
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-
-            getLogger().warning(
-                    "API request interrupted for " + path
-            );
-
+            getLogger().warning("API request interrupted for " + path);
             return "";
 
         } catch (Exception exception) {
             getLogger().warning(
                     "API request failed for " + path + ": "
                             + exception.getClass().getSimpleName()
-                            + " - " + exception.getMessage()
             );
-
             return "";
         }
     }
@@ -362,6 +464,10 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
     }
 
     private static String esc(String value) {
+        if (value == null) {
+            return "";
+        }
+
         return value
                 .replace("\\", "\\\\")
                 .replace("\"", "\\\"")
@@ -369,18 +475,12 @@ public final class SneakSMPBridge extends JavaPlugin implements Listener {
                 .replace("\r", "\\r");
     }
 
-    private static String extract(String json, String key) {
+    private static String extract(String json, Pattern pattern) {
         if (json == null || json.isBlank()) {
             return null;
         }
 
-        Pattern pattern = Pattern.compile(
-                "\"" + Pattern.quote(key)
-                        + "\"\\s*:\\s*\"([^\"]+)\""
-        );
-
         Matcher matcher = pattern.matcher(json);
-
         return matcher.find() ? matcher.group(1) : null;
     }
 }

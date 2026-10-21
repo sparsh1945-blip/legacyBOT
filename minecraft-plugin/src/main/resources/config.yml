@@ -1,4 +1,4 @@
-api-base-url: "http://127.0.0.1:8787"
+api-base-url: "https://legacybot-bbm3.onrender.com"
 # Replace this with the same strong random token configured in the API .env.
 api-token: "f237ffad92c05797694055e2db1e0375797028519da817144c8b2499dd6678b7"
 link-code-expiry-seconds: 300
