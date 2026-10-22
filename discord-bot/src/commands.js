@@ -1,6 +1,9 @@
 
-import { SlashCommandBuilder, ChannelType } from 'discord.js';
-import { EmbedBuilder } from 'discord.js';
+import {
+  SlashCommandBuilder,
+  ChannelType,
+  PermissionFlagsBits
+} from 'discord.js';
 
 const playerOption = name =>
   name
@@ -23,12 +26,10 @@ const reasonOption = name =>
     .setRequired(true);
 
 export const commands = [
-  // Public help
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show LegacyMC bot commands and help'),
 
-  // Staff announcement
   new SlashCommandBuilder()
     .setName('announce')
     .setDescription('Send a Minecraft server announcement (staff only)')
@@ -45,7 +46,6 @@ export const commands = [
         .setRequired(false)
     ),
 
-  // New staff coin commands
   new SlashCommandBuilder()
     .setName('addcoin')
     .setDescription('Add community coins to a player (staff only)')
@@ -60,7 +60,6 @@ export const commands = [
     .addIntegerOption(amountOption)
     .addStringOption(reasonOption),
 
-  // Existing commands
   new SlashCommandBuilder()
     .setName('minelink')
     .setDescription('Link your Minecraft account')
@@ -152,11 +151,11 @@ export const commands = [
   new SlashCommandBuilder()
     .setName('minestatus')
     .setDescription('Show server heartbeat status'),
-  
-     // Custom embed message
+
   new SlashCommandBuilder()
     .setName('custommsg')
     .setDescription('Send a custom embed message (admin only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addChannelOption(o =>
       o.setName('channel')
         .setDescription('Channel where the embed will be sent')
@@ -179,5 +178,5 @@ export const commands = [
       o.setName('color')
         .setDescription('Hex color, e.g. #5865F2')
         .setRequired(false)
-    ), 
+    )
 ].map(command => command.toJSON());
