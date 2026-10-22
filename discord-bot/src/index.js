@@ -437,7 +437,7 @@ client.on('interactionCreate', async i => {
 
         if (Object.hasOwn(guildMessages, trigger)) {
           return i.reply({
-            embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured. Use `/autoresponder edit` to change it.`, 0xf39c12)],
+            embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured. Use the edit subcommand to change it.`, 0xf39c12)],
             flags: MessageFlags.Ephemeral
           });
         }
