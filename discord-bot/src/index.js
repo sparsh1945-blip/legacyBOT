@@ -179,6 +179,41 @@ function saveCustomMessages() {
   fs.renameSync(tempFile, customFile);
 }
 
+function saveGuildAutoReplies(guildId, messages) {
+  customMessages[guildId] = messages;
+  saveCustomMessages();
+
+  const draftPrefix = `${guildId}:`;
+  for (const key of customDrafts.keys()) {
+    if (key.startsWith(draftPrefix)) {
+      customDrafts.delete(key);
+      customEditOrigins.delete(key);
+    }
+  }
+}
+
+function normalizeTrigger(value) {
+  return value.trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+function validTrigger(trigger) {
+  return Boolean(
+    trigger &&
+    trigger.length <= 100 &&
+    /[\p{L}\p{N}]/u.test(trigger) &&
+    !/[\p{Cc}\p{Cf}]/u.test(trigger)
+  );
+}
+
+function setAutoReply(messages, trigger, item) {
+  Object.defineProperty(messages, trigger, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: item
+  });
+}
+
 function draftKey(i) {
   return `${i.guildId}:${i.user.id}`;
 }
@@ -213,7 +248,7 @@ function customPanel(messages) {
   const entries = Object.entries(messages);
 
   const description = entries.length
-    ? entries.map(([key, item]) => `• **${key}** — ${item.title}`).join('\n')
+    ? entries.map(([key, item]) => `• **${key.slice(0, 80)}** — ${(item.reply || item.title || 'Embed reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
     : 'No auto-replies in this draft. Select Add Reply to create one.';
 
   return new EmbedBuilder()
@@ -297,7 +332,7 @@ function customModal(customId, item = {}) {
     .setStyle(TextInputStyle.Paragraph)
     .setMaxLength(3500)
     .setRequired(true)
-    .setValue(item.body || 'Your automatic reply goes here.');
+    .setValue(item.body || item.reply || 'Your automatic reply goes here.');
 
   const color = new TextInputBuilder()
     .setCustomId('color')
@@ -335,12 +370,102 @@ client.on('interactionCreate', async i => {
       if (!isAdmin(i)) return deny(i);
       if (!i.guildId) return deny(i, 'Use this command inside a server.');
 
-      const messages = getDraft(i);
-      return i.reply({
-        embeds: [customPanel(messages)],
-        components: customButtons(messages),
-        ephemeral: true
-      });
+      const action = i.options.getSubcommand();
+      const guildMessages = customMessages[i.guildId] || {};
+
+      if (action === 'panel') {
+        const messages = getDraft(i);
+        return i.reply({
+          embeds: [customPanel(messages)],
+          components: customButtons(messages),
+          ephemeral: true
+        });
+      }
+
+      if (action === 'add') {
+        const trigger = normalizeTrigger(i.options.getString('trigger'));
+        const reply = i.options.getString('reply').trim();
+
+        if (!validTrigger(trigger) || !reply) {
+          return i.reply({
+            content: 'Enter a trigger word or phrase (up to 100 characters) and a non-empty reply.',
+            ephemeral: true
+          });
+        }
+
+        if (Object.hasOwn(guildMessages, trigger)) {
+          return i.reply({
+            content: `The trigger **${trigger}** already exists. Use \`/autoresponder edit\` to change it.`,
+            ephemeral: true
+          });
+        }
+
+        if (Object.keys(guildMessages).length >= 25) {
+          return i.reply({ content: 'This server has reached the 25 auto-reply limit.', ephemeral: true });
+        }
+
+        setAutoReply(guildMessages, trigger, { trigger, reply });
+        saveGuildAutoReplies(i.guildId, guildMessages);
+
+        return i.reply({
+          content: `Added an auto-reply for **${trigger}**. It is active now.`,
+          ephemeral: true
+        });
+      }
+
+      if (action === 'edit') {
+        const currentTrigger = normalizeTrigger(i.options.getString('trigger'));
+        const trigger = normalizeTrigger(i.options.getString('new-trigger') || currentTrigger);
+        const reply = i.options.getString('reply').trim();
+        const existing = Object.hasOwn(guildMessages, currentTrigger)
+          ? guildMessages[currentTrigger]
+          : null;
+
+        if (!existing) {
+          return i.reply({ content: `No auto-reply was found for **${currentTrigger}**.`, ephemeral: true });
+        }
+
+        if (!validTrigger(trigger) || !reply) {
+          return i.reply({
+            content: 'Enter a valid trigger word or phrase and a non-empty reply.',
+            ephemeral: true
+          });
+        }
+
+        if (trigger !== currentTrigger && Object.hasOwn(guildMessages, trigger)) {
+          return i.reply({ content: `The trigger **${trigger}** already exists.`, ephemeral: true });
+        }
+
+        delete guildMessages[currentTrigger];
+        setAutoReply(guildMessages, trigger, { trigger, reply });
+        saveGuildAutoReplies(i.guildId, guildMessages);
+
+        return i.reply({ content: `Updated the auto-reply for **${trigger}**.`, ephemeral: true });
+      }
+
+      if (action === 'delete') {
+        const trigger = normalizeTrigger(i.options.getString('trigger'));
+
+        if (!Object.hasOwn(guildMessages, trigger)) {
+          return i.reply({ content: `No auto-reply was found for **${trigger}**.`, ephemeral: true });
+        }
+
+        delete guildMessages[trigger];
+        saveGuildAutoReplies(i.guildId, guildMessages);
+        return i.reply({ content: `Deleted the auto-reply for **${trigger}**.`, ephemeral: true });
+      }
+
+      if (action === 'list') {
+        const entries = Object.entries(guildMessages);
+        const description = entries.length
+          ? entries.map(([trigger, item]) => `• **${trigger.slice(0, 80)}** — ${(item.reply || item.title || 'Embed reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
+          : 'No auto-replies are configured for this server.';
+
+        return i.reply({
+          embeds: [new EmbedBuilder().setColor(0x22c7d6).setTitle('Auto-Replies').setDescription(description)],
+          ephemeral: true
+        });
+      }
     }
 
     if (command === 'custommsg') {
@@ -383,7 +508,7 @@ client.on('interactionCreate', async i => {
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
-          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder`' }
+          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add` · `/autoresponder edit` · `/autoresponder delete` · `/autoresponder list`' }
         );
 
       return i.reply({ embeds: [embed], ephemeral: true });
@@ -726,20 +851,12 @@ client.on('interactionCreate', async i => {
     }
 
     if (i.isModalSubmit()) {
-      const trigger = i.fields.getTextInputValue('trigger')
-        .trim()
-        .replace(/\s+/gu, ' ')
-        .toLowerCase();
+      const trigger = normalizeTrigger(i.fields.getTextInputValue('trigger'));
       const title = i.fields.getTextInputValue('title').trim();
       const body = i.fields.getTextInputValue('body').trim();
       const color = i.fields.getTextInputValue('color').trim().replace(/^#/, '');
 
-      if (
-        !trigger ||
-        trigger.length > 100 ||
-        !/[\p{L}\p{N}]/u.test(trigger) ||
-        /[\p{Cc}\p{Cf}]/u.test(trigger)
-      ) {
+      if (!validTrigger(trigger)) {
         return i.reply({
           content: 'Enter a trigger word or sentence up to 100 characters. It must include a letter or number.',
           ephemeral: true
@@ -760,7 +877,7 @@ client.on('interactionCreate', async i => {
         customEditOrigins.delete(key);
       }
 
-      if (messages[trigger] && trigger !== oldTrigger) {
+      if (Object.hasOwn(messages, trigger) && trigger !== oldTrigger) {
         return i.reply({
           content: `The trigger **${trigger}** already exists. Choose a different one.`,
           ephemeral: true
@@ -778,7 +895,7 @@ client.on('interactionCreate', async i => {
         delete messages[oldTrigger];
       }
 
-      messages[trigger] = { trigger, title, body, color: color.toUpperCase() };
+      setAutoReply(messages, trigger, { trigger, title, body, color: color.toUpperCase() });
 
       return i.reply({
         content: `Draft updated for **${trigger}**. Click **Save Changes** in the autoresponder panel to activate it.`,
@@ -789,7 +906,7 @@ client.on('interactionCreate', async i => {
     console.error('Custom message interaction failed:', error);
 
     const payload = {
-      content: 'Could not process that action. Try opening `/autoresponder` again.',
+      content: 'Could not process that action. Try `/autoresponder panel` again.',
       ephemeral: true
     };
 
@@ -827,7 +944,14 @@ client.on('messageCreate', async message => {
   const [, item] = matches;
 
   try {
-    await message.channel.send({ embeds: [customEmbed(item)] });
+    if (item.reply) {
+      await message.channel.send({
+        content: item.reply,
+        allowedMentions: { parse: [] }
+      });
+    } else {
+      await message.channel.send({ embeds: [customEmbed(item)] });
+    }
   } catch (error) {
     console.error('Could not send keyword response:', error.message);
   }

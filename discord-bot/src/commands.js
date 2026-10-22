@@ -184,4 +184,60 @@ export const commands = [
     .setName('autoresponder')
     .setDescription('Create and manage automatic keyword or phrase replies (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s =>
+      s.setName('add')
+        .setDescription('Add a text auto-reply')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Word or phrase that triggers the reply')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+        .addStringOption(o =>
+          o.setName('reply')
+            .setDescription('Text the bot should send')
+            .setRequired(true)
+            .setMaxLength(2000)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('edit')
+        .setDescription('Edit an auto-reply')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Current trigger word or phrase')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+        .addStringOption(o =>
+          o.setName('reply')
+            .setDescription('New reply text')
+            .setRequired(true)
+            .setMaxLength(2000)
+        )
+        .addStringOption(o =>
+          o.setName('new-trigger')
+            .setDescription('Optional replacement trigger word or phrase')
+            .setRequired(false)
+            .setMaxLength(100)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('delete')
+        .setDescription('Delete an auto-reply')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Trigger word or phrase to delete')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('list')
+        .setDescription('List this server’s auto-reply triggers')
+    )
+    .addSubcommand(s =>
+      s.setName('panel')
+        .setDescription('Open the embed auto-reply editor')
+    )
 ].map(command => command.toJSON());
