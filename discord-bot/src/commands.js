@@ -182,11 +182,11 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName('autoresponder')
-    .setDescription('Create and manage automatic keyword or phrase replies (admin only)')
+    .setDescription('Create and manage colorful automatic word or phrase replies (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s =>
       s.setName('add')
-        .setDescription('Add a text auto-reply')
+        .setDescription('Add a colorful embedded auto-reply')
         .addStringOption(o =>
           o.setName('trigger')
             .setDescription('Word or phrase that triggers the reply')
@@ -195,9 +195,21 @@ export const commands = [
         )
         .addStringOption(o =>
           o.setName('reply')
-            .setDescription('Text the bot should send')
+            .setDescription('Message text shown inside the reply embed')
             .setRequired(true)
             .setMaxLength(2000)
+        )
+        .addStringOption(o =>
+          o.setName('title')
+            .setDescription('Optional title shown above the reply')
+            .setRequired(false)
+            .setMaxLength(256)
+        )
+        .addStringOption(o =>
+          o.setName('color')
+            .setDescription('Optional embed color, HEX such as #22C7D6')
+            .setRequired(false)
+            .setMaxLength(7)
         )
     )
     .addSubcommand(s =>
@@ -221,6 +233,18 @@ export const commands = [
             .setRequired(false)
             .setMaxLength(100)
         )
+        .addStringOption(o =>
+          o.setName('title')
+            .setDescription('Optional embed title')
+            .setRequired(false)
+            .setMaxLength(256)
+        )
+        .addStringOption(o =>
+          o.setName('color')
+            .setDescription('Optional embed color, HEX such as #22C7D6')
+            .setRequired(false)
+            .setMaxLength(7)
+        )
     )
     .addSubcommand(s =>
       s.setName('delete')
@@ -235,6 +259,10 @@ export const commands = [
     .addSubcommand(s =>
       s.setName('list')
         .setDescription('List this server’s auto-reply triggers')
+    )
+    .addSubcommand(s =>
+      s.setName('help')
+        .setDescription('Show auto-reply commands, options, and examples')
     )
     .addSubcommand(s =>
       s.setName('panel')

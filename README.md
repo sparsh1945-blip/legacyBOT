@@ -68,12 +68,12 @@ Discord:
 - `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
-- `/autoresponder add trigger:<word or phrase> reply:<text>` — add a text auto-reply.
-- `/autoresponder edit trigger:<existing trigger> reply:<new text> new-trigger:<optional>` — edit a reply and optionally its trigger.
+- `/autoresponder add trigger:<word or phrase> reply:<text> title:<optional> color:<optional HEX>` — add a colorful embed auto-reply.
+- `/autoresponder edit trigger:<existing trigger> reply:<new text> new-trigger:<optional> title:<optional> color:<optional HEX>` — edit a reply and optionally its trigger or appearance.
 - `/autoresponder delete trigger:<trigger>` and `/autoresponder list` — manage saved replies.
-- `/autoresponder panel` — open the embed auto-reply editor. Up to 25 triggers are supported per server.
+- `/autoresponder help` shows options and examples; `/autoresponder panel` opens the visual embed editor. Up to 25 triggers are supported per server.
 
-The add, edit, and delete commands save immediately. The bot replies when a message contains the trigger as a complete word or phrase, ignoring case (for example, `server ip` matches `What is the SERVER IP?`, but `ip` does not match `ship`). The panel lets admins edit embed title/message/color and requires clicking **Save Changes**. Run `npm run deploy` after updating the bot to register the command.
+The add, edit, and delete commands save immediately. Set the optional embed title and HEX color (for example, `#22C7D6`); the default is a cyan auto-reply embed. The bot replies when a message contains the trigger as a complete word or phrase, ignoring case (for example, `server ip` matches `What is the SERVER IP?`, but `ip` does not match `ship`). The panel lets admins edit embed title/message/color and requires clicking **Save Changes**. Run `npm run deploy` after updating the bot to register the command.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.

@@ -206,6 +206,22 @@ function validTrigger(trigger) {
   );
 }
 
+function normalizeHexColor(value, fallback = '22C7D6') {
+  if (value == null) return fallback;
+
+  const hex = value.trim().replace(/^#/, '').toUpperCase();
+  return /^[0-9A-F]{6}$/.test(hex) ? hex : null;
+}
+
+function autoResponderNotice(title, description, color = 0x22c7d6) {
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description)
+    .setFooter({ text: 'LEGACY MC • AUTO-RESPONDER' })
+    .setTimestamp();
+}
+
 function setAutoReply(messages, trigger, item) {
   Object.defineProperty(messages, trigger, {
     configurable: true,
@@ -233,15 +249,16 @@ function getDraft(i) {
 }
 
 function customEmbed(item) {
-  const hex = /^[0-9a-f]{6}$/i.test(item.color || '')
-    ? item.color
-    : '22C7D6';
+  const hex = normalizeHexColor(item.color) || '22C7D6';
+  const reply = item.reply || item.body || 'This auto-reply has no message yet.';
 
   return new EmbedBuilder()
     .setColor(parseInt(hex, 16))
-    .setTitle(item.title)
-    .setDescription(item.body)
-    .setFooter({ text: 'LEGACY MC • Server Information' })
+    .setAuthor({ name: 'LEGACY MC • AUTO-REPLY' })
+    .setTitle(item.title || '✨ Auto-Reply')
+    .setDescription(reply)
+    .addFields({ name: '🔑 Trigger', value: `\`${item.trigger || 'custom'}\``, inline: true })
+    .setFooter({ text: 'LEGACY MC • Automatic response' })
     .setTimestamp();
 }
 
@@ -254,9 +271,11 @@ function customPanel(messages) {
 
   return new EmbedBuilder()
     .setColor(0x22c7d6)
-    .setTitle('LEGACY MC | Auto-Responder')
+    .setAuthor({ name: 'LEGACY MC • SERVER TOOLS' })
+    .setTitle('✨ Auto-Responder Studio')
     .setDescription(description)
-    .setFooter({ text: 'Save your changes to activate word and phrase replies.' });
+    .setFooter({ text: 'Save changes to activate your word and phrase replies.' })
+    .setTimestamp();
 }
 
 function customButtons(messages) {
@@ -374,7 +393,10 @@ client.on('interactionCreate', async i => {
       const action = i.options.getSubcommand(false);
       if (!action) {
         return i.reply({
-          content: 'Choose a subcommand: `add`, `edit`, `delete`, `list`, or `panel`. For example, use `/autoresponder add`.',
+          embeds: [autoResponderNotice(
+            '✨ Choose an Auto-Responder Action',
+            'Available options: **add**, **edit**, **delete**, **list**, **help**, and **panel**.\n\nStart with `/autoresponder add` to create a colorful reply.'
+          )],
           flags: MessageFlags.Ephemeral
         });
       }
@@ -392,30 +414,50 @@ client.on('interactionCreate', async i => {
       if (action === 'add') {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
         const reply = i.options.getString('reply').trim();
+        const title = i.options.getString('title')?.trim() || '✨ Auto-Reply';
+        const color = normalizeHexColor(i.options.getString('color'));
 
         if (!validTrigger(trigger) || !reply) {
           return i.reply({
-            content: 'Enter a trigger word or phrase (up to 100 characters) and a non-empty reply.',
+            embeds: [autoResponderNotice(
+              '⚠️ Check Your Auto-Reply',
+              'Enter a trigger word or phrase (up to 100 characters) and a non-empty reply.',
+              0xe74c3c
+            )],
+            flags: MessageFlags.Ephemeral
+          });
+        }
+
+        if (!color) {
+          return i.reply({
+            embeds: [autoResponderNotice('🎨 Invalid HEX Color', 'Use six HEX digits, such as `#22C7D6`.', 0xe74c3c)],
             flags: MessageFlags.Ephemeral
           });
         }
 
         if (Object.hasOwn(guildMessages, trigger)) {
           return i.reply({
-            content: `The trigger **${trigger}** already exists. Use \`/autoresponder edit\` to change it.`,
+            embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured. Use `/autoresponder edit` to change it.`, 0xf39c12)],
             flags: MessageFlags.Ephemeral
           });
         }
 
         if (Object.keys(guildMessages).length >= 25) {
-          return i.reply({ content: 'This server has reached the 25 auto-reply limit.', flags: MessageFlags.Ephemeral });
+          return i.reply({
+            embeds: [autoResponderNotice('📚 Auto-Reply Limit Reached', 'This server can have up to **25** auto-replies.', 0xf39c12)],
+            flags: MessageFlags.Ephemeral
+          });
         }
 
-        setAutoReply(guildMessages, trigger, { trigger, reply });
+        setAutoReply(guildMessages, trigger, { trigger, reply, title, color });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
         return i.reply({
-          content: `Added an auto-reply for **${trigger}**. It is active now.`,
+          embeds: [autoResponderNotice(
+            '✅ Auto-Reply Added',
+            `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 500)}\n**Appearance:** ${title} · \`#${color}\`\n\nIt is active now.`,
+            parseInt(color, 16)
+          )],
           flags: MessageFlags.Ephemeral
         });
       }
@@ -434,44 +476,112 @@ client.on('interactionCreate', async i => {
 
         if (!validTrigger(trigger) || !reply) {
           return i.reply({
-            content: 'Enter a valid trigger word or phrase and a non-empty reply.',
+            embeds: [autoResponderNotice('⚠️ Check Your Auto-Reply', 'Enter a valid trigger word or phrase and a non-empty reply.', 0xe74c3c)],
+            flags: MessageFlags.Ephemeral
+          });
+        }
+
+        const title = i.options.getString('title')?.trim() || existing.title || '✨ Auto-Reply';
+        const color = normalizeHexColor(i.options.getString('color'), existing.color || '22C7D6');
+
+        if (!color) {
+          return i.reply({
+            embeds: [autoResponderNotice('🎨 Invalid HEX Color', 'Use six HEX digits, such as `#22C7D6`.', 0xe74c3c)],
             flags: MessageFlags.Ephemeral
           });
         }
 
         if (trigger !== currentTrigger && Object.hasOwn(guildMessages, trigger)) {
-          return i.reply({ content: `The trigger **${trigger}** already exists.`, flags: MessageFlags.Ephemeral });
+          return i.reply({
+            embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured.`, 0xf39c12)],
+            flags: MessageFlags.Ephemeral
+          });
         }
 
         delete guildMessages[currentTrigger];
-        setAutoReply(guildMessages, trigger, { trigger, reply });
+        setAutoReply(guildMessages, trigger, { trigger, reply, title, color });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
-        return i.reply({ content: `Updated the auto-reply for **${trigger}**.`, flags: MessageFlags.Ephemeral });
+        return i.reply({
+          embeds: [autoResponderNotice('✏️ Auto-Reply Updated', `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 500)}\n**Appearance:** ${title} · \`#${color}\``, parseInt(color, 16))],
+          flags: MessageFlags.Ephemeral
+        });
       }
 
       if (action === 'delete') {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
 
         if (!Object.hasOwn(guildMessages, trigger)) {
-          return i.reply({ content: `No auto-reply was found for **${trigger}**.`, flags: MessageFlags.Ephemeral });
+          return i.reply({
+            embeds: [autoResponderNotice('🔎 Auto-Reply Not Found', `No auto-reply was found for **${trigger}**.`, 0xf39c12)],
+            flags: MessageFlags.Ephemeral
+          });
         }
 
         delete guildMessages[trigger];
         saveGuildAutoReplies(i.guildId, guildMessages);
-        return i.reply({ content: `Deleted the auto-reply for **${trigger}**.`, flags: MessageFlags.Ephemeral });
+        return i.reply({
+          embeds: [autoResponderNotice('🗑️ Auto-Reply Deleted', `The trigger **${trigger}** has been removed.`, 0xe74c3c)],
+          flags: MessageFlags.Ephemeral
+        });
       }
 
       if (action === 'list') {
         const entries = Object.entries(guildMessages);
-        const description = entries.length
-          ? entries.map(([trigger, item]) => `• **${trigger.slice(0, 80)}** — ${(item.reply || item.title || 'Embed reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
-          : 'No auto-replies are configured for this server.';
+        const embed = autoResponderNotice(
+          '💬 Auto-Reply Library',
+          entries.length
+            ? `**${entries.length}/25** replies are active. They trigger when a whole word or phrase appears.`
+            : 'No auto-replies are configured yet. Use `/autoresponder add` to create one.'
+        );
+
+        for (const [trigger, item] of entries) {
+          const reply = (item.reply || item.body || 'No reply text').replace(/\s+/gu, ' ');
+          embed.addFields({
+            name: `🔑 ${trigger}`.slice(0, 256),
+            value: `✨ ${(item.title || 'Auto-Reply').slice(0, 28)}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\``,
+            inline: true
+          });
+        }
 
         return i.reply({
-          embeds: [new EmbedBuilder().setColor(0x22c7d6).setTitle('Auto-Replies').setDescription(description)],
+          embeds: [embed],
           flags: MessageFlags.Ephemeral
         });
+      }
+
+      if (action === 'help') {
+        const embed = new EmbedBuilder()
+          .setColor(0x8e44ad)
+          .setAuthor({ name: 'LEGACY MC • COMMAND GUIDE' })
+          .setTitle('✨ Auto-Responder Help')
+          .setDescription('Build colorful automatic replies for words or phrases your community uses.')
+          .addFields(
+            {
+              name: '➕ Add a reply',
+              value: '`/autoresponder add`\n**Required:** `trigger`, `reply`\n**Optional:** `title`, `color`'
+            },
+            {
+              name: '✏️ Edit a reply',
+              value: '`/autoresponder edit`\n**Required:** existing `trigger`, new `reply`\n**Optional:** `new-trigger`, `title`, `color`'
+            },
+            {
+              name: '🧰 More options',
+              value: '`/autoresponder delete` removes a trigger.\n`/autoresponder list` shows saved replies.\n`/autoresponder panel` opens the embed editor.'
+            },
+            {
+              name: '🎨 Example',
+              value: '`trigger: server ip`\n`reply: Java: play.example.net`\n`title: Join our server`\n`color: #22C7D6`'
+            },
+            {
+              name: '💡 Trigger matching',
+              value: 'Triggers ignore letter case and match as complete words or phrases. A trigger `ip` matches “what is the IP?” but not “ship”.'
+            }
+          )
+          .setFooter({ text: 'Up to 25 auto-replies per server • Replies activate immediately' })
+          .setTimestamp();
+
+        return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -515,7 +625,7 @@ client.on('interactionCreate', async i => {
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
-          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add` · `/autoresponder edit` · `/autoresponder delete` · `/autoresponder list`' }
+          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder help` · `/autoresponder add` · `/autoresponder edit` · `/autoresponder delete` · `/autoresponder list` · `/autoresponder panel`' }
         );
 
       return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
@@ -951,14 +1061,7 @@ client.on('messageCreate', async message => {
   const [, item] = matches;
 
   try {
-    if (item.reply) {
-      await message.channel.send({
-        content: item.reply,
-        allowedMentions: { parse: [] }
-      });
-    } else {
-      await message.channel.send({ embeds: [customEmbed(item)] });
-    }
+    await message.channel.send({ embeds: [customEmbed(item)] });
   } catch (error) {
     console.error('Could not send keyword response:', error.message);
   }
