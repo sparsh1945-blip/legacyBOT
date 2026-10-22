@@ -9,6 +9,7 @@ import {
   EmbedBuilder,
   ChannelType,
   PermissionFlagsBits,
+  MessageFlags,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -108,7 +109,7 @@ function isModerator(i) {
 }
 
 async function deny(i, message = 'You do not have permission to use this command.') {
-  return i.reply({ content: message, ephemeral: true });
+  return i.reply({ content: message, flags: MessageFlags.Ephemeral });
 }
 
 function getString(i, ...names) {
@@ -147,10 +148,10 @@ async function replyError(i, error) {
   const message = `Something went wrong: ${error.message || 'Unknown error'}`;
 
   if (i.deferred || i.replied) {
-    return i.followUp({ content: message, ephemeral: true }).catch(() => {});
+    return i.followUp({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 
-  return i.reply({ content: message, ephemeral: true }).catch(() => {});
+  return i.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
 }
 
 // Custom message storage
@@ -370,7 +371,13 @@ client.on('interactionCreate', async i => {
       if (!isAdmin(i)) return deny(i);
       if (!i.guildId) return deny(i, 'Use this command inside a server.');
 
-      const action = i.options.getSubcommand();
+      const action = i.options.getSubcommand(false);
+      if (!action) {
+        return i.reply({
+          content: 'Choose a subcommand: `add`, `edit`, `delete`, `list`, or `panel`. For example, use `/autoresponder add`.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
       const guildMessages = customMessages[i.guildId] || {};
 
       if (action === 'panel') {
@@ -378,7 +385,7 @@ client.on('interactionCreate', async i => {
         return i.reply({
           embeds: [customPanel(messages)],
           components: customButtons(messages),
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -389,19 +396,19 @@ client.on('interactionCreate', async i => {
         if (!validTrigger(trigger) || !reply) {
           return i.reply({
             content: 'Enter a trigger word or phrase (up to 100 characters) and a non-empty reply.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
         }
 
         if (Object.hasOwn(guildMessages, trigger)) {
           return i.reply({
             content: `The trigger **${trigger}** already exists. Use \`/autoresponder edit\` to change it.`,
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
         }
 
         if (Object.keys(guildMessages).length >= 25) {
-          return i.reply({ content: 'This server has reached the 25 auto-reply limit.', ephemeral: true });
+          return i.reply({ content: 'This server has reached the 25 auto-reply limit.', flags: MessageFlags.Ephemeral });
         }
 
         setAutoReply(guildMessages, trigger, { trigger, reply });
@@ -409,7 +416,7 @@ client.on('interactionCreate', async i => {
 
         return i.reply({
           content: `Added an auto-reply for **${trigger}**. It is active now.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -422,37 +429,37 @@ client.on('interactionCreate', async i => {
           : null;
 
         if (!existing) {
-          return i.reply({ content: `No auto-reply was found for **${currentTrigger}**.`, ephemeral: true });
+          return i.reply({ content: `No auto-reply was found for **${currentTrigger}**.`, flags: MessageFlags.Ephemeral });
         }
 
         if (!validTrigger(trigger) || !reply) {
           return i.reply({
             content: 'Enter a valid trigger word or phrase and a non-empty reply.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
         }
 
         if (trigger !== currentTrigger && Object.hasOwn(guildMessages, trigger)) {
-          return i.reply({ content: `The trigger **${trigger}** already exists.`, ephemeral: true });
+          return i.reply({ content: `The trigger **${trigger}** already exists.`, flags: MessageFlags.Ephemeral });
         }
 
         delete guildMessages[currentTrigger];
         setAutoReply(guildMessages, trigger, { trigger, reply });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
-        return i.reply({ content: `Updated the auto-reply for **${trigger}**.`, ephemeral: true });
+        return i.reply({ content: `Updated the auto-reply for **${trigger}**.`, flags: MessageFlags.Ephemeral });
       }
 
       if (action === 'delete') {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
 
         if (!Object.hasOwn(guildMessages, trigger)) {
-          return i.reply({ content: `No auto-reply was found for **${trigger}**.`, ephemeral: true });
+          return i.reply({ content: `No auto-reply was found for **${trigger}**.`, flags: MessageFlags.Ephemeral });
         }
 
         delete guildMessages[trigger];
         saveGuildAutoReplies(i.guildId, guildMessages);
-        return i.reply({ content: `Deleted the auto-reply for **${trigger}**.`, ephemeral: true });
+        return i.reply({ content: `Deleted the auto-reply for **${trigger}**.`, flags: MessageFlags.Ephemeral });
       }
 
       if (action === 'list') {
@@ -463,7 +470,7 @@ client.on('interactionCreate', async i => {
 
         return i.reply({
           embeds: [new EmbedBuilder().setColor(0x22c7d6).setTitle('Auto-Replies').setDescription(description)],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -477,11 +484,11 @@ client.on('interactionCreate', async i => {
       const color = i.options.getString('color') || '#5865F2';
 
       if (!/^#[0-9a-f]{6}$/i.test(color)) {
-        return i.reply({ content: 'Invalid color. Example: #5865F2', ephemeral: true });
+        return i.reply({ content: 'Invalid color. Example: #5865F2', flags: MessageFlags.Ephemeral });
       }
 
       if (!channel || channel.type !== ChannelType.GuildText) {
-        return i.reply({ content: 'Select a server text channel.', ephemeral: true });
+        return i.reply({ content: 'Select a server text channel.', flags: MessageFlags.Ephemeral });
       }
 
       await channel.send({
@@ -495,7 +502,7 @@ client.on('interactionCreate', async i => {
         ]
       });
 
-      return i.reply({ content: `Custom embed sent to ${channel}.`, ephemeral: true });
+      return i.reply({ content: `Custom embed sent to ${channel}.`, flags: MessageFlags.Ephemeral });
     }
 
     if (command === 'help') {
@@ -511,7 +518,7 @@ client.on('interactionCreate', async i => {
           { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add` · `/autoresponder edit` · `/autoresponder delete` · `/autoresponder list`' }
         );
 
-      return i.reply({ embeds: [embed], ephemeral: true });
+      return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     if (command === 'announce') {
@@ -519,10 +526,10 @@ client.on('interactionCreate', async i => {
 
       const message = getString(i, 'message');
       if (!message?.trim() || message.length > 1000) {
-        return i.reply({ content: 'Announcement must be 1–1000 characters.', ephemeral: true });
+        return i.reply({ content: 'Announcement must be 1–1000 characters.', flags: MessageFlags.Ephemeral });
       }
 
-      await i.deferReply({ ephemeral: true });
+      await i.deferReply({ flags: MessageFlags.Ephemeral });
 
       const result = await api('/v1/announcements', 'POST', {
         message: message.trim(),
@@ -551,7 +558,7 @@ client.on('interactionCreate', async i => {
       const code = getString(i, 'code');
 
       if (!code || !/^\d{6}$/.test(code)) {
-        return i.reply({ content: 'Enter the six-digit code from Minecraft `/discordlink`.', ephemeral: true });
+        return i.reply({ content: 'Enter the six-digit code from Minecraft `/discordlink`.', flags: MessageFlags.Ephemeral });
       }
 
       const result = await api('/v1/links/verify', 'POST', {
@@ -561,7 +568,7 @@ client.on('interactionCreate', async i => {
 
       return i.reply({
         content: `Your Minecraft account **${result.link.username}** is now linked.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -569,18 +576,18 @@ client.on('interactionCreate', async i => {
       const account = linkedAccount(i.user.id);
 
       if (!account) {
-        return i.reply({ content: 'You do not have a linked Minecraft account.', ephemeral: true });
+        return i.reply({ content: 'You do not have a linked Minecraft account.', flags: MessageFlags.Ephemeral });
       }
 
       await api(`/v1/links/${i.user.id}`, 'DELETE');
-      return i.reply({ content: 'Your Minecraft account has been unlinked.', ephemeral: true });
+      return i.reply({ content: 'Your Minecraft account has been unlinked.', flags: MessageFlags.Ephemeral });
     }
 
     if (command === 'mineaccount') {
       const account = linkedAccount(i.user.id);
 
       if (!account) {
-        return i.reply({ content: 'No account linked. Use `/minelink`.', ephemeral: true });
+        return i.reply({ content: 'No account linked. Use `/minelink`.', flags: MessageFlags.Ephemeral });
       }
 
       return i.reply({
@@ -593,14 +600,14 @@ client.on('interactionCreate', async i => {
               { name: 'UUID', value: account.uuid || 'Unknown', inline: true }
             )
         ],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
     if (command === 'mineleaderboard') {
       const type = getString(i, 'type') || 'kills';
       if (!['kills', 'deaths', 'money', 'playtime', 'coins'].includes(type)) {
-        return i.reply({ content: 'Invalid leaderboard type.', ephemeral: true });
+        return i.reply({ content: 'Invalid leaderboard type.', flags: MessageFlags.Ephemeral });
       }
 
       const result = await api(`/v1/leaderboards/${encodeURIComponent(type)}`);
@@ -637,7 +644,7 @@ client.on('interactionCreate', async i => {
       if (!player) {
         return i.reply({
           content: 'Player stats were not found. They may need to join the server first.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -661,12 +668,12 @@ client.on('interactionCreate', async i => {
       const account = linkedAccount(i.user.id);
 
       if (!account) {
-        return i.reply({ content: 'Link your Minecraft account first using `/minelink`.', ephemeral: true });
+        return i.reply({ content: 'Link your Minecraft account first using `/minelink`.', flags: MessageFlags.Ephemeral });
       }
 
       return i.reply({
         content: `**${account.username}** has **${formatNumber(coins.get(account.uuid))} coins**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -678,12 +685,12 @@ client.on('interactionCreate', async i => {
       const reason = getString(i, 'reason');
 
       if (!playerName || !amount || amount < 1 || !reason?.trim()) {
-        return i.reply({ content: 'Provide a player, positive amount and reason.', ephemeral: true });
+        return i.reply({ content: 'Provide a player, positive amount and reason.', flags: MessageFlags.Ephemeral });
       }
 
       const player = findPlayer(playerName);
       if (!player) {
-        return i.reply({ content: `Could not find Minecraft player **${playerName}**.`, ephemeral: true });
+        return i.reply({ content: `Could not find Minecraft player **${playerName}**.`, flags: MessageFlags.Ephemeral });
       }
 
       const subtract = ['takecoin', 'takecoins'].includes(command);
@@ -696,7 +703,7 @@ client.on('interactionCreate', async i => {
 
       return i.reply({
         content: `Updated **${player.username}** by ${subtract ? '-' : '+'}${formatNumber(amount)} coins. New balance: **${formatNumber(result.balance)}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -708,11 +715,11 @@ client.on('interactionCreate', async i => {
       const hours = getInteger(i, 'hours');
 
       if (!player) {
-        return i.reply({ content: 'Provide a Minecraft player name.', ephemeral: true });
+        return i.reply({ content: 'Provide a Minecraft player name.', flags: MessageFlags.Ephemeral });
       }
 
       if (command === 'minetempban' && (!hours || hours < 1)) {
-        return i.reply({ content: 'Provide a positive ban duration.', ephemeral: true });
+        return i.reply({ content: 'Provide a positive ban duration.', flags: MessageFlags.Ephemeral });
       }
 
       const typeMap = {
@@ -732,7 +739,7 @@ client.on('interactionCreate', async i => {
 
       return i.reply({
         content: `Moderation request recorded for **${player}** (ID: \`${result.id}\`). This request is not executed in Minecraft yet.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -740,7 +747,7 @@ client.on('interactionCreate', async i => {
       const serverInfo = players.get('__server__');
 
       if (!serverInfo?.heartbeat) {
-        return i.reply({ content: 'Waiting for a Minecraft plugin heartbeat.', ephemeral: true });
+        return i.reply({ content: 'Waiting for a Minecraft plugin heartbeat.', flags: MessageFlags.Ephemeral });
       }
 
       const ageSeconds = Math.floor((Date.now() - serverInfo.heartbeat) / 1000);
@@ -759,7 +766,7 @@ client.on('interactionCreate', async i => {
 
     return i.reply({
       content: 'This command is not handled by the current bot code.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   } catch (error) {
     await replyError(i, error);
@@ -773,11 +780,11 @@ client.on('interactionCreate', async i => {
   if (!i.customId.startsWith('legacy_custom_')) return;
 
   if (!i.guildId) {
-    return i.reply({ content: 'Use this inside a server.', ephemeral: true }).catch(() => {});
+    return i.reply({ content: 'Use this inside a server.', flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 
   if (!isAdmin(i)) {
-    return i.reply({ content: 'Only administrators can manage custom messages.', ephemeral: true }).catch(() => {});
+    return i.reply({ content: 'Only administrators can manage custom messages.', flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 
   try {
@@ -792,7 +799,7 @@ client.on('interactionCreate', async i => {
 
       if (i.customId === 'legacy_custom_edit' || i.customId === 'legacy_custom_delete') {
         if (!Object.keys(messages).length) {
-          return i.reply({ content: 'There are no messages to select yet.', ephemeral: true });
+          return i.reply({ content: 'There are no messages to select yet.', flags: MessageFlags.Ephemeral });
         }
 
         const deleting = i.customId === 'legacy_custom_delete';
@@ -823,7 +830,7 @@ client.on('interactionCreate', async i => {
       if (i.customId === 'legacy_custom_pick_edit') {
         const item = messages[selected];
         if (!item) {
-          return i.reply({ content: 'That draft entry no longer exists.', ephemeral: true });
+          return i.reply({ content: 'That draft entry no longer exists.', flags: MessageFlags.Ephemeral });
         }
 
         customEditOrigins.set(key, selected);
@@ -837,7 +844,7 @@ client.on('interactionCreate', async i => {
 
       if (i.customId === 'legacy_custom_pick_delete') {
         if (!messages[selected]) {
-          return i.reply({ content: 'That draft entry no longer exists.', ephemeral: true });
+          return i.reply({ content: 'That draft entry no longer exists.', flags: MessageFlags.Ephemeral });
         }
 
         delete messages[selected];
@@ -859,14 +866,14 @@ client.on('interactionCreate', async i => {
       if (!validTrigger(trigger)) {
         return i.reply({
           content: 'Enter a trigger word or sentence up to 100 characters. It must include a letter or number.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
       if (!title || !body || !/^[0-9a-f]{6}$/i.test(color)) {
         return i.reply({
           content: 'Enter a title, message and valid six-digit HEX color.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -880,14 +887,14 @@ client.on('interactionCreate', async i => {
       if (Object.hasOwn(messages, trigger) && trigger !== oldTrigger) {
         return i.reply({
           content: `The trigger **${trigger}** already exists. Choose a different one.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
       if (!oldTrigger && Object.keys(messages).length >= 25) {
         return i.reply({
           content: 'This server has reached the 25 auto-reply limit.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -899,7 +906,7 @@ client.on('interactionCreate', async i => {
 
       return i.reply({
         content: `Draft updated for **${trigger}**. Click **Save Changes** in the autoresponder panel to activate it.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   } catch (error) {
@@ -907,7 +914,7 @@ client.on('interactionCreate', async i => {
 
     const payload = {
       content: 'Could not process that action. Try `/autoresponder panel` again.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     };
 
     if (i.deferred || i.replied) {
