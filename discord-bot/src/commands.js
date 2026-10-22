@@ -178,5 +178,10 @@ export const commands = [
       o.setName('color')
         .setDescription('Hex color, e.g. #5865F2')
         .setRequired(false)
-    )
+    ),
+
+  new SlashCommandBuilder()
+    .setName('autoresponder')
+    .setDescription('Create and manage automatic keyword or phrase replies (admin only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(command => command.toJSON());

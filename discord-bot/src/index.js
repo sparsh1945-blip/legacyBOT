@@ -171,6 +171,7 @@ function loadCustomMessages() {
 
 let customMessages = loadCustomMessages();
 const customDrafts = new Map();
+const customEditOrigins = new Map();
 
 function saveCustomMessages() {
   const tempFile = `${customFile}.tmp`;
@@ -213,13 +214,13 @@ function customPanel(messages) {
 
   const description = entries.length
     ? entries.map(([key, item]) => `• **${key}** — ${item.title}`).join('\n')
-    : 'No saved messages in this draft. Select Add Message to create one.';
+    : 'No auto-replies in this draft. Select Add Reply to create one.';
 
   return new EmbedBuilder()
     .setColor(0x22c7d6)
-    .setTitle('LEGACY MC | Custom Message Sender')
+    .setTitle('LEGACY MC | Auto-Responder')
     .setDescription(description)
-    .setFooter({ text: 'Save your changes to activate keyword replies.' });
+    .setFooter({ text: 'Save your changes to activate word and phrase replies.' });
 }
 
 function customButtons(messages) {
@@ -227,11 +228,11 @@ function customButtons(messages) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('legacy_custom_add')
-        .setLabel('Add Message')
+        .setLabel('Add Reply')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId('legacy_custom_edit')
-        .setLabel('Edit Message')
+        .setLabel('Edit Reply')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId('legacy_custom_save')
@@ -245,7 +246,7 @@ function customButtons(messages) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('legacy_custom_delete')
-          .setLabel('Delete Message')
+          .setLabel('Delete Reply')
           .setStyle(ButtonStyle.Danger)
       )
     );
@@ -260,10 +261,10 @@ function customSelect(messages, customId) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(customId)
-      .setPlaceholder('Choose a message')
+      .setPlaceholder('Choose an auto-reply')
       .addOptions(entries.map(([key, item]) => ({
         label: key.slice(0, 100),
-        description: (item.title || 'Custom message').slice(0, 100),
+        description: (item.title || 'Auto-reply').slice(0, 100),
         value: key
       })))
   );
@@ -272,13 +273,13 @@ function customSelect(messages, customId) {
 function customModal(customId, item = {}) {
   const modal = new ModalBuilder()
     .setCustomId(customId)
-    .setTitle(item.trigger ? 'Edit Custom Message' : 'Add Custom Message');
+    .setTitle(item.trigger ? 'Edit Auto-Reply' : 'Add Auto-Reply');
 
   const trigger = new TextInputBuilder()
     .setCustomId('trigger')
-    .setLabel('Keyword, e.g. ip')
+    .setLabel('Trigger word or sentence')
     .setStyle(TextInputStyle.Short)
-    .setMaxLength(32)
+    .setMaxLength(100)
     .setRequired(true)
     .setValue(item.trigger || '');
 
@@ -288,7 +289,7 @@ function customModal(customId, item = {}) {
     .setStyle(TextInputStyle.Short)
     .setMaxLength(256)
     .setRequired(true)
-    .setValue(item.title || 'LEGACY MC Server Information');
+    .setValue(item.title || 'Auto-Reply');
 
   const body = new TextInputBuilder()
     .setCustomId('body')
@@ -296,7 +297,7 @@ function customModal(customId, item = {}) {
     .setStyle(TextInputStyle.Paragraph)
     .setMaxLength(3500)
     .setRequired(true)
-    .setValue(item.body || 'Java Edition: paid3.skilloraclouds.com:20004\nBedrock Edition: paid3.skilloraclouds.com\nPort: 20004');
+    .setValue(item.body || 'Your automatic reply goes here.');
 
   const color = new TextInputBuilder()
     .setCustomId('color')
@@ -330,7 +331,7 @@ client.on('interactionCreate', async i => {
   const command = i.commandName;
 
   try {
-    if (command === 'custommsgsender') {
+    if (command === 'autoresponder') {
       if (!isAdmin(i)) return deny(i);
       if (!i.guildId) return deny(i, 'Use this command inside a server.');
 
@@ -382,7 +383,7 @@ client.on('interactionCreate', async i => {
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
-          { name: 'Custom embeds', value: '`/custommsg` · `/custommsgsender`' }
+          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder`' }
         );
 
       return i.reply({ embeds: [embed], ephemeral: true });
@@ -660,6 +661,7 @@ client.on('interactionCreate', async i => {
 
     if (i.isButton()) {
       if (i.customId === 'legacy_custom_add') {
+        customEditOrigins.delete(key);
         return i.showModal(customModal('legacy_custom_modal_add'));
       }
 
@@ -699,8 +701,9 @@ client.on('interactionCreate', async i => {
           return i.reply({ content: 'That draft entry no longer exists.', ephemeral: true });
         }
 
+        customEditOrigins.set(key, selected);
         return i.showModal(
-          customModal(`legacy_custom_modal_edit:${encodeURIComponent(selected)}`, {
+          customModal('legacy_custom_modal_edit', {
             ...item,
             trigger: selected
           })
@@ -723,14 +726,22 @@ client.on('interactionCreate', async i => {
     }
 
     if (i.isModalSubmit()) {
-      const trigger = i.fields.getTextInputValue('trigger').trim().toLowerCase();
+      const trigger = i.fields.getTextInputValue('trigger')
+        .trim()
+        .replace(/\s+/gu, ' ')
+        .toLowerCase();
       const title = i.fields.getTextInputValue('title').trim();
       const body = i.fields.getTextInputValue('body').trim();
       const color = i.fields.getTextInputValue('color').trim().replace(/^#/, '');
 
-      if (!/^[a-z0-9_-]{1,32}$/.test(trigger)) {
+      if (
+        !trigger ||
+        trigger.length > 100 ||
+        !/[\p{L}\p{N}]/u.test(trigger) ||
+        /[\p{Cc}\p{Cf}]/u.test(trigger)
+      ) {
         return i.reply({
-          content: 'Keyword must be 1–32 characters and contain only letters, numbers, underscores or hyphens.',
+          content: 'Enter a trigger word or sentence up to 100 characters. It must include a letter or number.',
           ephemeral: true
         });
       }
@@ -744,13 +755,21 @@ client.on('interactionCreate', async i => {
 
       let oldTrigger = null;
 
-      if (i.customId.startsWith('legacy_custom_modal_edit:')) {
-        oldTrigger = decodeURIComponent(i.customId.slice('legacy_custom_modal_edit:'.length));
+      if (i.customId === 'legacy_custom_modal_edit') {
+        oldTrigger = customEditOrigins.get(key) || null;
+        customEditOrigins.delete(key);
       }
 
       if (messages[trigger] && trigger !== oldTrigger) {
         return i.reply({
-          content: `The keyword **${trigger}** already exists. Choose a different keyword.`,
+          content: `The trigger **${trigger}** already exists. Choose a different one.`,
+          ephemeral: true
+        });
+      }
+
+      if (!oldTrigger && Object.keys(messages).length >= 25) {
+        return i.reply({
+          content: 'This server has reached the 25 auto-reply limit.',
           ephemeral: true
         });
       }
@@ -762,7 +781,7 @@ client.on('interactionCreate', async i => {
       messages[trigger] = { trigger, title, body, color: color.toUpperCase() };
 
       return i.reply({
-        content: `Draft updated for keyword **${trigger}**. Run \`/custommsgsender\` again and click **Save Changes** to activate it.`,
+        content: `Draft updated for **${trigger}**. Click **Save Changes** in the autoresponder panel to activate it.`,
         ephemeral: true
       });
     }
@@ -770,7 +789,7 @@ client.on('interactionCreate', async i => {
     console.error('Custom message interaction failed:', error);
 
     const payload = {
-      content: 'Could not process that action. Try opening `/custommsgsender` again.',
+      content: 'Could not process that action. Try opening `/autoresponder` again.',
       ephemeral: true
     };
 
@@ -782,16 +801,30 @@ client.on('interactionCreate', async i => {
   }
 });
 
-// Respond only when a message exactly matches a saved keyword.
+function triggerMatches(content, trigger) {
+  const escaped = trigger
+    .split(/\s+/u)
+    .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+');
+  const pattern = new RegExp(
+    `(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`,
+    'iu'
+  );
+
+  return pattern.test(content);
+}
+
+// Reply when a complete trigger word or phrase appears in a message.
 
 client.on('messageCreate', async message => {
   if (message.author.bot || !message.guild) return;
 
-  const trigger = message.content.trim().toLowerCase();
-  if (!trigger || trigger.length > 32) return;
+  const matches = Object.entries(customMessages[message.guild.id] || {})
+    .sort(([left], [right]) => right.length - left.length)
+    .find(([trigger]) => triggerMatches(message.content, trigger));
 
-  const item = customMessages[message.guild.id]?.[trigger];
-  if (!item) return;
+  if (!matches) return;
+  const [, item] = matches;
 
   try {
     await message.channel.send({ embeds: [customEmbed(item)] });

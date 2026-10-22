@@ -18,7 +18,7 @@ For offline/cracked servers, UUIDs can be impersonated unless the server/proxy a
 - Paper 1.21.11
 - Vault + a compatible economy plugin (EssentialsX Economy is common)
 - Node.js 20+
-- Discord bot application with `applications.commands` and `bot` scopes; invite with Send Messages, Embed Links, Use Application Commands permissions.
+- Discord bot application with `applications.commands` and `bot` scopes; invite with Send Messages, Embed Links, Use Application Commands permissions. Enable the Message Content privileged intent in the Discord Developer Portal so auto-replies can read messages.
 
 ## 1. Build the plugin
 From `minecraft-plugin/`:
@@ -68,6 +68,9 @@ Discord:
 - `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
+- `/autoresponder` — admins can add, edit, and delete up to 25 automatic embed replies per server.
+
+In the `/autoresponder` panel, add a trigger word or sentence, edit the embed title/message/color, then click **Save Changes**. The bot replies when a message contains the trigger as a complete word or phrase, ignoring case (for example, `server ip` matches `What is the SERVER IP?`, but `ip` does not match `ship`). Run `npm run deploy` after updating the bot to register the command.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.
