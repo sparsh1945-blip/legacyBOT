@@ -1,5 +1,11 @@
-api-base-url: "https://legacybot-bbm3.onrender.com"
-# Replace this with the same strong random token configured in the API .env.
+apibase-url: "https://legacybot-bbm3.onrender.com"
 api-token: "f237ffad92c05797694055e2db1e0375797028519da817144c8b2499dd6678b7"
-link-code-expiry-seconds: 300
+
+announcement-title: "ANNOUNCEMENT"
+announcement-fade-in-ticks: 10
+announcement-stay-seconds: 4
+announcement-fade-out-ticks: 20
+announcement-poll-seconds: 5
+
+link-reminder-interval-minutes: 10
 stats-sync-interval-seconds: 60

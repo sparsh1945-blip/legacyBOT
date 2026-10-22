@@ -1,21 +1,18 @@
 
 package com.sneaksmp.bridge;
 
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.milkbowl.vault.economy.Economy;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.title.Title;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Statistic;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.Listener;
-import org.bukkit.event.entity.PlayerDeathEvent;
-import org.bukkit.event.player.PlayerJoinEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -25,185 +22,134 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public final class SneakSMPBridge extends JavaPlugin
-        implements Listener {
-
-    private static final Pattern UUID_PATTERN = Pattern.compile(
-            "^[0-9a-fA-F-]{36}$"
-    );
-
-    private static final Pattern PLAYER_NAME_PATTERN = Pattern.compile(
-            "^[A-Za-z0-9_]{1,16}$"
-    );
-
-    private static final Pattern CODE_PATTERN = Pattern.compile(
-            "\"code\"\\s*:\\s*\"(\\d{6})\""
-    );
-
-    private static final Pattern MESSAGE_PATTERN = Pattern.compile(
-            "\"messageB64\"\\s*:\\s*\"([A-Za-z0-9+/=]+)\""
-    );
-
-    private static final LegacyComponentSerializer LEGACY_SERIALIZER =
-            LegacyComponentSerializer.legacyAmpersand();
+public final class SneakSMPBridge extends JavaPlugin {
 
     private HttpClient http;
-    private Economy economy;
 
-    private final AtomicBoolean announcementPollRunning =
-            new AtomicBoolean(false);
+    private BukkitTask announcementTask;
+    private BukkitTask reminderTask;
+    private BukkitTask statsTask;
+    private BukkitTask heartbeatTask;
+
+    private String apiBaseUrl;
+    private String apiToken;
+
+    private final Set<UUID> linkedCache = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> reminderInProgress = ConcurrentHashMap.newKeySet();
+
+    private static final Pattern CODE_PATTERN =
+            Pattern.compile("\"code\"\\s*:\\s*\"?([A-Za-z0-9]{6,12})\"?");
+
+    private static final Pattern LINKED_PATTERN =
+            Pattern.compile("\"linked\"\\s*:\\s*true");
+
+    private static final Pattern MESSAGE_PATTERN =
+            Pattern.compile("\"messageB64\"\\s*:\\s*\"([^\"]*)\"");
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
 
         http = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
+                .connectTimeout(Duration.ofSeconds(5))
                 .build();
 
-        setupEconomy();
-        getServer().getPluginManager().registerEvents(this, this);
+        loadSettings();
+        startTasks();
 
-        long interval = Math.max(
-                30L,
-                getConfig().getLong("stats-sync-interval-seconds", 60L)
-        );
-
-        // Bukkit player data is collected on the main thread.
-        // API requests are made asynchronously.
-        getServer().getScheduler().runTaskTimer(
-                this,
-                this::syncOnlineStats,
-                100L,
-                interval * 20L
-        );
-
-        // Poll the authenticated API every five seconds.
-        getServer().getScheduler().runTaskTimerAsynchronously(
-                this,
-                this::pollAnnouncement,
-                100L,
-                100L
-        );
-
-        String base = getConfig().getString("api-base-url", "");
-        String token = apiToken();
-
-        getLogger().info("SneakSMP Bridge enabled.");
-        getLogger().info("API URL configured: " +
-                (base != null && !base.isBlank()));
-        getLogger().info("API token configured: " +
-                (token != null && !token.isBlank()));
+        getLogger().info("SneakSMPBridge enabled.");
     }
 
     @Override
     public void onDisable() {
-        // Bukkit cancels this plugin's scheduled tasks automatically.
+        cancel(announcementTask);
+        cancel(reminderTask);
+        cancel(statsTask);
+        cancel(heartbeatTask);
+
+        getLogger().info("SneakSMPBridge disabled.");
     }
 
-    private void setupEconomy() {
-        if (getServer().getPluginManager().getPlugin("Vault") == null) {
-            getLogger().info(
-                    "Vault not found. Money statistics will be unavailable."
-            );
-            return;
-        }
-
-        RegisteredServiceProvider<Economy> provider =
-                getServer().getServicesManager()
-                        .getRegistration(Economy.class);
-
-        if (provider != null) {
-            economy = provider.getProvider();
-            getLogger().info("Vault economy hooked successfully.");
-        } else {
-            getLogger().info("No Vault economy provider found.");
+    private void cancel(BukkitTask task) {
+        if (task != null) {
+            task.cancel();
         }
     }
 
-    @EventHandler
-    public void onJoin(PlayerJoinEvent event) {
-        Player player = event.getPlayer();
+    private void loadSettings() {
+        apiBaseUrl = getConfig()
+                .getString(
+                        "api-base-url",
+                        "https://legacybot-bbm3.onrender.com"
+                )
+                .trim()
+                .replaceAll("/+$", "");
 
-        post(
-                "/v1/players/upsert",
-                "{\"uuid\":\"" + player.getUniqueId()
-                        + "\",\"username\":\"" + esc(player.getName()) + "\"}"
-        );
-    }
+        apiToken = getConfig().getString("api-token", "").trim();
 
-    @EventHandler
-    public void onQuit(PlayerQuitEvent event) {
-        post("/v1/players/stats", statsJson(event.getPlayer()));
-    }
-
-    @EventHandler
-    public void onDeath(PlayerDeathEvent event) {
-        Player victim = event.getEntity();
-
-        post(
-                "/v1/stats/death",
-                "{\"uuid\":\"" + victim.getUniqueId()
-                        + "\",\"username\":\"" + esc(victim.getName()) + "\"}"
-        );
-
-        Player killer = victim.getKiller();
-
-        if (killer != null) {
-            post(
-                    "/v1/stats/kill",
-                    "{\"uuid\":\"" + killer.getUniqueId()
-                            + "\",\"username\":\""
-                            + esc(killer.getName()) + "\"}"
+        if (apiToken.isEmpty() || apiToken.equals("CHANGE_ME")) {
+            getLogger().warning(
+                    "Set api-token in plugins/SneakSMPBridge/config.yml"
             );
         }
     }
 
-    private void syncOnlineStats() {
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            post("/v1/players/stats", statsJson(player));
-        }
+    private void startTasks() {
+        long announcementInterval = Math.max(
+                5,
+                getConfig().getLong("announcement-poll-seconds", 5)
+        );
 
-        String heartbeat =
-                "{\"online\":" + Bukkit.getOnlinePlayers().size()
-                        + ",\"max\":" + Bukkit.getMaxPlayers()
-                        + ",\"version\":\""
-                        + esc(Bukkit.getMinecraftVersion()) + "\"}";
+        long reminderMinutes = Math.max(
+                1,
+                getConfig().getLong("link-reminder-interval-minutes", 10)
+        );
 
-        post("/v1/server/heartbeat", heartbeat);
-    }
+        long statsSeconds = Math.max(
+                15,
+                getConfig().getLong("stats-sync-interval-seconds", 60)
+        );
 
-    private String statsJson(Player player) {
-        double money = -1;
-
-        if (economy != null) {
-            try {
-                money = economy.getBalance(player);
-
-                if (!Double.isFinite(money) || money < 0) {
-                    money = -1;
-                }
-            } catch (Exception exception) {
-                getLogger().fine(
-                        "Could not read economy balance for "
-                                + player.getName()
+        announcementTask =
+                Bukkit.getScheduler().runTaskTimerAsynchronously(
+                        this,
+                        this::pollAnnouncement,
+                        40L,
+                        announcementInterval * 20L
                 );
-            }
-        }
 
-        return "{\"uuid\":\"" + player.getUniqueId()
-                + "\",\"username\":\"" + esc(player.getName())
-                + "\",\"kills\":" + player.getStatistic(Statistic.PLAYER_KILLS)
-                + ",\"deaths\":" + player.getStatistic(Statistic.DEATHS)
-                + ",\"playtimeTicks\":"
-                + player.getStatistic(Statistic.PLAY_ONE_MINUTE)
-                + ",\"money\":" + money + "}";
+        reminderTask = Bukkit.getScheduler().runTaskTimer(
+                this,
+                this::checkOnlinePlayersForReminders,
+                100L,
+                reminderMinutes * 60L * 20L
+        );
+
+        // Read Bukkit player data on the main server thread.
+        statsTask = Bukkit.getScheduler().runTaskTimer(
+                this,
+                this::scheduleStatsSync,
+                100L,
+                statsSeconds * 20L
+        );
+
+        heartbeatTask =
+                Bukkit.getScheduler().runTaskTimerAsynchronously(
+                        this,
+                        this::sendHeartbeat,
+                        100L,
+                        1200L
+                );
     }
+
+    // ==================================================
+    // COMMANDS
+    // ==================================================
 
     @Override
     public boolean onCommand(
@@ -214,199 +160,388 @@ public final class SneakSMPBridge extends JavaPlugin
     ) {
         if (command.getName().equalsIgnoreCase("discordlink")) {
             if (!(sender instanceof Player player)) {
-                sender.sendMessage("Only players can link an account.");
+                sender.sendMessage("Only players can use this command.");
                 return true;
             }
 
-            String body = "{\"uuid\":\"" + player.getUniqueId()
-                    + "\",\"username\":\"" + esc(player.getName()) + "\"}";
-
-            player.sendMessage("§7Requesting your Discord link code...");
-
-            CompletableFuture.runAsync(() -> {
-                String response = request(
-                        "POST",
-                        "/v1/links/create",
-                        body
-                );
-
-                String code = extract(response, CODE_PATTERN);
-
-                Bukkit.getScheduler().runTask(this, () -> {
-                    if (!player.isOnline()) {
-                        return;
-                    }
-
-                    if (code != null) {
-                        player.sendMessage(
-                                "§aYour Discord link code: §e" + code
-                        );
-                        player.sendMessage(
-                                "§7Use it in Discord within 5 minutes."
-                        );
-                    } else {
-                        player.sendMessage(
-                                "§cCould not create a link code."
-                        );
-                        player.sendMessage(
-                                "§7Check the Minecraft server console for the API error."
-                        );
-                    }
-                });
-            }).exceptionally(error -> {
-                getLogger().warning("Link-code task failed.");
-                return null;
-            });
-
+            createLinkCode(player);
             return true;
         }
 
         if (command.getName().equalsIgnoreCase("sneaksmp")) {
             if (!sender.hasPermission("sneaksmp.admin")) {
-                sender.sendMessage("§cYou do not have permission.");
+                sender.sendMessage(
+                        Component.text(
+                                "You don't have permission.",
+                                NamedTextColor.RED
+                        )
+                );
                 return true;
             }
 
             if (args.length == 1
                     && args[0].equalsIgnoreCase("reload")) {
                 reloadConfig();
-                sender.sendMessage("§aSneakSMP Bridge config reloaded.");
-                return true;
+                loadSettings();
+
+                sender.sendMessage(
+                        Component.text(
+                                "SneakSMPBridge configuration reloaded.",
+                                NamedTextColor.GREEN
+                        )
+                );
+            } else {
+                sender.sendMessage(
+                        Component.text(
+                                "Usage: /sneaksmp reload",
+                                NamedTextColor.YELLOW
+                        )
+                );
             }
 
-            sender.sendMessage("Usage: /sneaksmp reload");
             return true;
         }
 
         return false;
     }
 
-    private void post(String path, String body) {
-        CompletableFuture.runAsync(() -> request("POST", path, body))
-                .exceptionally(error -> {
-                    getLogger().warning(
-                            "Background API task failed for " + path
-                    );
-                    return null;
+    // ==================================================
+    // ACCOUNT LINKING
+    // ==================================================
+
+    private void createLinkCode(Player player) {
+        String body = "{"
+                + "\"uuid\":\"" + player.getUniqueId() + "\","
+                + "\"username\":\"" + escapeJson(player.getName()) + "\""
+                + "}";
+
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            String response = apiRequest(
+                    "POST",
+                    "/v1/links/create",
+                    body
+            );
+
+            Matcher matcher = CODE_PATTERN.matcher(response);
+
+            if (!matcher.find()) {
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (player.isOnline()) {
+                        player.sendMessage(
+                                Component.text(
+                                        "Could not create a link code. "
+                                                + "Please try again later.",
+                                        NamedTextColor.RED
+                                )
+                        );
+                    }
                 });
+
+                getLogger().warning(
+                        "Link-code request failed. Check API endpoint and token."
+                );
+                return;
+            }
+
+            String code = matcher.group(1);
+
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (player.isOnline()) {
+                    sendLinkCode(player, code);
+                }
+            });
+        });
     }
 
-    /**
-     * Fetches one queued announcement.
-     *
-     * Network work happens asynchronously. Bukkit broadcasts are
-     * scheduled back onto the main server thread.
-     */
+    private void sendLinkCode(Player player, String code) {
+        player.sendMessage(Component.empty());
+
+        player.sendMessage(
+                Component.text(
+                        "SneakSMP • Account Linking",
+                        NamedTextColor.AQUA
+                )
+        );
+
+        player.sendMessage(
+                Component.text(
+                        "Link your Minecraft account to our Discord server.",
+                        NamedTextColor.GRAY
+                )
+        );
+
+        player.sendMessage(Component.empty());
+
+        player.sendMessage(
+                Component.text("YOUR LINK CODE", NamedTextColor.YELLOW)
+        );
+
+        player.sendMessage(
+                Component.text(code, NamedTextColor.WHITE)
+                        .clickEvent(ClickEvent.copyToClipboard(code))
+        );
+
+        player.sendMessage(
+                Component.text(
+                                "[ CLICK TO COPY CODE ]",
+                                NamedTextColor.GREEN
+                        )
+                        .clickEvent(ClickEvent.copyToClipboard(code))
+        );
+
+        player.sendMessage(
+                Component.text(
+                        "Use this code with the LegacyMC Discord bot.",
+                        NamedTextColor.GRAY
+                )
+        );
+
+        player.sendMessage(Component.empty());
+    }
+
+    // ==================================================
+    // LINK STATUS AND REMINDERS
+    // ==================================================
+
+    private boolean isLinked(UUID uuid) {
+        String response = apiRequest(
+                "GET",
+                "/v1/links/status?uuid=" + uuid,
+                null
+        );
+
+        return LINKED_PATTERN.matcher(response).find();
+    }
+
+    private void checkOnlinePlayersForReminders() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            UUID uuid = player.getUniqueId();
+
+            if (!reminderInProgress.add(uuid)) {
+                continue;
+            }
+
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    boolean linked = isLinked(uuid);
+
+                    if (linked) {
+                        linkedCache.add(uuid);
+                    } else {
+                        linkedCache.remove(uuid);
+
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            if (!player.isOnline()) {
+                                return;
+                            }
+
+                            player.sendMessage(Component.empty());
+
+                            player.sendMessage(
+                                    Component.text(
+                                            "🔗 SneakSMP Account Reminder",
+                                            NamedTextColor.AQUA
+                                    )
+                            );
+
+                            player.sendMessage(
+                                    Component.text(
+                                            "Link your Minecraft account to Discord "
+                                                    + "to access account features and rewards!",
+                                            NamedTextColor.YELLOW
+                                    )
+                            );
+
+                            player.sendMessage(
+                                    Component.text(
+                                                    "[ LINK YOUR ACCOUNT ]",
+                                                    NamedTextColor.GREEN
+                                            )
+                                            .clickEvent(
+                                                    ClickEvent.runCommand("/discordlink")
+                                            )
+                                            .hoverEvent(
+                                                    Component.text(
+                                                            "Generate your linking code"
+                                                    )
+                                            )
+                            );
+                        });
+                    }
+                } finally {
+                    reminderInProgress.remove(uuid);
+                }
+            });
+        }
+    }
+
+    // ==================================================
+    // DISCORD ANNOUNCEMENTS
+    // ==================================================
+
     private void pollAnnouncement() {
-        if (!isEnabled()
-                || !announcementPollRunning.compareAndSet(false, true)) {
+        String response = apiRequest(
+                "GET",
+                "/v1/announcements/next",
+                null
+        );
+
+        Matcher matcher = MESSAGE_PATTERN.matcher(response);
+
+        if (!matcher.find()) {
             return;
         }
 
         try {
-            String response = request(
-                    "GET",
-                    "/v1/announcements/next",
-                    null
+            String message = new String(
+                    Base64.getDecoder().decode(matcher.group(1)),
+                    StandardCharsets.UTF_8
             );
-
-            if (response.isBlank()) {
-                return;
-            }
-
-            String encoded = extract(response, MESSAGE_PATTERN);
-
-            // An empty queue returns {"announcement":null}.
-            if (encoded == null || encoded.isBlank()) {
-                return;
-            }
-
-            final String message;
-
-            try {
-                message = new String(
-                        Base64.getDecoder().decode(encoded),
-                        StandardCharsets.UTF_8
-                );
-            } catch (IllegalArgumentException exception) {
-                getLogger().warning(
-                        "Announcement contained invalid Base64 data."
-                );
-                return;
-            }
 
             if (message.isBlank()) {
                 return;
             }
 
-            Bukkit.getScheduler().runTask(this, () -> {
-                if (!isEnabled()) {
-                    return;
-                }
-
-                Bukkit.broadcast(
-                        LEGACY_SERIALIZER.deserialize(
-                                "&8[&aLegacyMC&8] &f" + message
-                        )
-                );
-            });
-
-        } catch (Exception exception) {
-            getLogger().warning(
-                    "Could not process announcement: "
-                            + exception.getClass().getSimpleName()
+            Bukkit.getScheduler().runTask(
+                    this,
+                    () -> showAnnouncement(message)
             );
-        } finally {
-            announcementPollRunning.set(false);
+
+        } catch (IllegalArgumentException exception) {
+            getLogger().warning("Invalid announcement encoding received.");
         }
     }
 
-    private String request(String method, String path, String body) {
+    private void showAnnouncement(String message) {
+        Component title = Component.text(
+                getConfig().getString(
+                        "announcement-title",
+                        "ANNOUNCEMENT"
+                ),
+                NamedTextColor.AQUA
+        );
+
+        Component subtitle = Component.text(
+                message,
+                NamedTextColor.WHITE
+        );
+
+        int fadeIn = Math.max(
+                0,
+                getConfig().getInt("announcement-fade-in-ticks", 10)
+        );
+
+        int stay = Math.max(
+                1,
+                getConfig().getInt("announcement-stay-seconds", 4)
+        );
+
+        int fadeOut = Math.max(
+                0,
+                getConfig().getInt("announcement-fade-out-ticks", 20)
+        );
+
+        Title.Times times = Title.Times.times(
+                Duration.ofMillis(fadeIn * 50L),
+                Duration.ofSeconds(stay),
+                Duration.ofMillis(fadeOut * 50L)
+        );
+
+        Title announcement = Title.title(title, subtitle, times);
+
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            player.showTitle(announcement);
+
+            player.sendMessage(
+                    Component.text(
+                            "[ANNOUNCEMENT] ",
+                            NamedTextColor.AQUA
+                    ).append(
+                            Component.text(message, NamedTextColor.WHITE)
+                    )
+            );
+        }
+
+        getLogger().info("[ANNOUNCEMENT] " + message);
+    }
+
+    // ==================================================
+    // PLAYER STATISTICS
+    // ==================================================
+
+    private void scheduleStatsSync() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            String body = "{"
+                    + "\"uuid\":\"" + player.getUniqueId() + "\","
+                    + "\"username\":\"" + escapeJson(player.getName()) + "\","
+                    + "\"kills\":" + player.getStatistic(Statistic.PLAYER_KILLS) + ","
+                    + "\"deaths\":" + player.getStatistic(Statistic.DEATHS) + ","
+                    + "\"playtimeTicks\":" + player.getStatistic(Statistic.PLAY_ONE_MINUTE)
+                    + "}";
+
+            Bukkit.getScheduler().runTaskAsynchronously(
+                    this,
+                    () -> apiRequest("POST", "/v1/players/sync", body)
+            );
+        }
+    }
+
+    // ==================================================
+    // SERVER HEARTBEAT
+    // ==================================================
+
+    private void sendHeartbeat() {
+        // Snapshot Bukkit state on the main thread before making HTTP calls.
+        Bukkit.getScheduler().runTask(this, () -> {
+            String body = "{"
+                    + "\"server\":\"SneakSMP\","
+                    + "\"onlinePlayers\":" + Bukkit.getOnlinePlayers().size() + ","
+                    + "\"maxPlayers\":" + Bukkit.getMaxPlayers()
+                    + "}";
+
+            Bukkit.getScheduler().runTaskAsynchronously(
+                    this,
+                    () -> apiRequest("POST", "/v1/server/heartbeat", body)
+            );
+        });
+    }
+
+    // ==================================================
+    // HTTP API
+    // ==================================================
+
+    private String apiRequest(
+            String method,
+            String endpoint,
+            String body
+    ) {
+        if (apiToken == null
+                || apiToken.isBlank()
+                || apiToken.equals("CHANGE_ME")) {
+            return "";
+        }
+
         try {
-            String base = getConfig()
-                    .getString("api-base-url", "")
-                    .trim()
-                    .replaceAll("/+$", "");
-
-            if (base.isBlank()) {
-                getLogger().severe(
-                        "API base URL is missing in config.yml."
-                );
-                return "";
-            }
-
-            String token = apiToken();
-
-            if (token == null || token.isBlank()) {
-                getLogger().severe(
-                        "API token is missing in config.yml."
-                );
-                return "";
-            }
-
             HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(base + path))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Authorization", "Bearer " + token)
-                    .header("Content-Type", "application/json")
+                    .uri(URI.create(apiBaseUrl + endpoint))
+                    .timeout(Duration.ofSeconds(10))
+                    .header("Authorization", "Bearer " + apiToken)
                     .header("Accept", "application/json");
 
             if ("POST".equalsIgnoreCase(method)) {
+                builder.header(
+                        "Content-Type",
+                        "application/json; charset=utf-8"
+                );
+
                 builder.POST(
                         HttpRequest.BodyPublishers.ofString(
                                 body == null ? "{}" : body,
                                 StandardCharsets.UTF_8
                         )
                 );
-            } else if ("GET".equalsIgnoreCase(method)) {
-                builder.GET();
-            } else if ("DELETE".equalsIgnoreCase(method)) {
-                builder.DELETE();
             } else {
-                getLogger().warning(
-                        "Unsupported HTTP method: " + method
-                );
-                return "";
+                builder.GET();
             }
 
             HttpResponse<String> response = http.send(
@@ -416,54 +551,32 @@ public final class SneakSMPBridge extends JavaPlugin
                     )
             );
 
-            int status = response.statusCode();
-            String responseBody = response.body() == null
-                    ? ""
-                    : response.body();
-
-            if (status < 200 || status >= 300) {
+            if (response.statusCode() < 200
+                    || response.statusCode() >= 300) {
                 getLogger().warning(
-                        "API request failed: " + method + " " + path
-                                + " returned HTTP " + status
-                                + ". Response: "
-                                + responseBody.substring(
-                                        0,
-                                        Math.min(responseBody.length(), 300)
-                                )
-                );
-                return "";
-            }
-
-            // Avoid logging every empty announcement poll.
-            if (!path.equals("/v1/announcements/next")
-                    || !responseBody.contains("\"announcement\":null")) {
-                getLogger().fine(
-                        "API request successful: " + path
-                                + " (HTTP " + status + ")"
+                        method + " " + endpoint
+                                + " returned HTTP "
+                                + response.statusCode()
                 );
             }
 
-            return responseBody;
-
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            getLogger().warning("API request interrupted for " + path);
-            return "";
+            return response.body() == null ? "" : response.body();
 
         } catch (Exception exception) {
             getLogger().warning(
-                    "API request failed for " + path + ": "
-                            + exception.getClass().getSimpleName()
+                    "API request failed for " + endpoint
+                            + ": " + exception.getMessage()
             );
+
             return "";
         }
     }
 
-    private String apiToken() {
-        return getConfig().getString("api-token", "");
-    }
+    // ==================================================
+    // JSON ESCAPING
+    // ==================================================
 
-    private static String esc(String value) {
+    private String escapeJson(String value) {
         if (value == null) {
             return "";
         }
@@ -472,15 +585,7 @@ public final class SneakSMPBridge extends JavaPlugin
                 .replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
-                .replace("\r", "\\r");
-    }
-
-    private static String extract(String json, Pattern pattern) {
-        if (json == null || json.isBlank()) {
-            return null;
-        }
-
-        Matcher matcher = pattern.matcher(json);
-        return matcher.find() ? matcher.group(1) : null;
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 }

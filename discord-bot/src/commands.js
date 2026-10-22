@@ -1,5 +1,6 @@
 
 import { SlashCommandBuilder, ChannelType } from 'discord.js';
+import { EmbedBuilder } from 'discord.js';
 
 const playerOption = name =>
   name
@@ -150,5 +151,33 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName('minestatus')
-    .setDescription('Show server heartbeat status')
+    .setDescription('Show server heartbeat status'),
+  
+     // Custom embed message
+  new SlashCommandBuilder()
+    .setName('custommsg')
+    .setDescription('Send a custom embed message (admin only)')
+    .addChannelOption(o =>
+      o.setName('channel')
+        .setDescription('Channel where the embed will be sent')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName('title')
+        .setDescription('Embed title')
+        .setRequired(true)
+        .setMaxLength(256)
+    )
+    .addStringOption(o =>
+      o.setName('message')
+        .setDescription('Embed description')
+        .setRequired(true)
+        .setMaxLength(4000)
+    )
+    .addStringOption(o =>
+      o.setName('color')
+        .setDescription('Hex color, e.g. #5865F2')
+        .setRequired(false)
+    ), 
 ].map(command => command.toJSON());

@@ -1,13 +1,27 @@
-
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
   ChannelType,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  StringSelectMenuBuilder,
+  SlashCommandBuilder,
+  REST,
+  Routes
 } from 'discord.js';
+
+import { app } from './api.js';
+import { players, links, coins } from './store.js';
 
 import { app } from './api.js';
 import { players, links, coins } from './store.js';
@@ -21,7 +35,11 @@ if (!token || !apiToken) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 const server = app.listen(port, '0.0.0.0', () => {
@@ -31,6 +49,60 @@ const server = app.listen(port, '0.0.0.0', () => {
 server.on('error', error => {
   console.error('API server failed:', error.message);
 });
+
+if (interaction.isChatInputCommand() &&
+    interaction.commandName === 'custommsg') {
+
+  if (!interaction.memberPermissions?.has('Administrator')) {
+    return interaction.reply({
+      content: '❌ Only administrators can use this command.',
+      ephemeral: true
+    });
+  }
+
+  const channel = interaction.options.getChannel('channel');
+  const title = interaction.options.getString('title');
+  const message = interaction.options.getString('message');
+  const colorInput = interaction.options.getString('color') || '#5865F2';
+
+  if (!/^#[0-9A-Fa-f]{6}$/.test(colorInput)) {
+    return interaction.reply({
+      content: '❌ Invalid color. Use a hex color such as #5865F2.',
+      ephemeral: true
+    });
+  }
+
+  if (!channel.isTextBased() || !channel.send) {
+    return interaction.reply({
+      content: '❌ Please select a text channel.',
+      ephemeral: true
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(colorInput)
+    .setTitle(title)
+    .setDescription(message)
+    .setFooter({ text: 'LegacyMC' })
+    .setTimestamp();
+
+  try {
+    await channel.send({ embeds: [embed] });
+
+    await interaction.reply({
+      content: `✅ Custom embed sent to ${channel}.`,
+      ephemeral: true
+    });
+  } catch (error) {
+    console.error('custommsg error:', error);
+
+    await interaction.reply({
+      content: '❌ Could not send the embed. Check the bot permissions.',
+      ephemeral: true
+    });
+  }
+}
+
 
 // --------------------------------------------------
 // API HELPER
@@ -73,6 +145,8 @@ async function api(path, method = 'GET', body = undefined) {
 
   return data;
 }
+
+
 
 // --------------------------------------------------
 // PERMISSIONS
@@ -623,3 +697,175 @@ client.login(token).catch(error => {
   server.close();
   process.exitCode = 1;
 });
+// ==================================================
+// LEGACY MC CUSTOM MESSAGE SENDER
+// All feature code stays inside index.js
+// ==================================================
+
+const customDir = path.resolve('data');
+const customFile = path.join(customDir, 'custom-messages.json');
+
+fs.mkdirSync(customDir, { recursive: true });
+
+function loadCustomMessages() {
+  try {
+    return JSON.parse(fs.readFileSync(customFile, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+let customMessages = loadCustomMessages();
+
+function saveCustomMessages() {
+  const tempFile = `${customFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(customMessages, null, 2));
+  fs.renameSync(tempFile, customFile);
+}
+
+const customDrafts = new Map();
+
+function getDraft(interaction) {
+  const key = `${interaction.guildId}:${interaction.user.id}`;
+
+  if (!customDrafts.has(key)) {
+    customDrafts.set(
+      key,
+      structuredClone(customMessages[interaction.guildId] || {})
+    );
+  }
+
+  return customDrafts.get(key);
+}
+
+function customEmbed(item) {
+  const color = /^[0-9a-f]{6}$/i.test(item.color)
+    ? parseInt(item.color, 16)
+    : 0x22c7d6;
+
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(item.title)
+    .setDescription(item.body)
+    .setFooter({ text: 'LEGACY MC • Server Information' })
+    .setTimestamp();
+}
+
+function customPanel(messages) {
+  const entries = Object.entries(messages);
+
+  const description = entries.length
+    ? entries.map(([key, value]) => `• **${key}** — ${value.title}`).join('\n')
+    : 'No messages yet. Click **Add Message** to create one.';
+
+  return new EmbedBuilder()
+    .setColor(0x22c7d6)
+    .setTitle('LEGACY MC | Custom Message Sender')
+    .setDescription(description)
+    .setFooter({ text: 'Make changes, then click Save Changes.' });
+}
+
+function customButtons(messages) {
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('legacy_custom_add')
+      .setLabel('Add Message')
+      .setStyle(ButtonStyle.Success),
+
+    new ButtonBuilder()
+      .setCustomId('legacy_custom_edit')
+      .setLabel('Edit Message')
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId('legacy_custom_save')
+      .setLabel('Save Changes')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  const rows = [row];
+
+  if (Object.keys(messages).length) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('legacy_custom_delete')
+          .setLabel('Delete Message')
+          .setStyle(ButtonStyle.Danger)
+      )
+    );
+  }
+
+  return rows;
+}
+
+function customModal(customId, item = {}) {
+  const modal = new ModalBuilder()
+    .setCustomId(customId)
+    .setTitle(item.trigger ? 'Edit Custom Message' : 'Add Custom Message');
+
+  const trigger = new TextInputBuilder()
+    .setCustomId('trigger')
+    .setLabel('Keyword, e.g. ip')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(32)
+    .setRequired(true)
+    .setValue(item.trigger || '');
+
+  const title = new TextInputBuilder()
+    .setCustomId('title')
+    .setLabel('Embed title')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(256)
+    .setRequired(true)
+    .setValue(item.title || 'LEGACY MC Server Information');
+
+  const body = new TextInputBuilder()
+    .setCustomId('body')
+    .setLabel('Embed message')
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(3500)
+    .setRequired(true)
+    .setValue(
+      item.body ||
+      'Java Edition: paid3.skilloraclouds.com:20004\n' +
+      'Bedrock Edition: paid3.skilloraclouds.com\n' +
+      'Port: 20004'
+    );
+
+  const color = new TextInputBuilder()
+    .setCustomId('color')
+    .setLabel('Embed HEX color, e.g. 22C7D6')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(6)
+    .setRequired(true)
+    .setValue(item.color || '22C7D6');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(trigger),
+    new ActionRowBuilder().addComponents(title),
+    new ActionRowBuilder().addComponents(body),
+    new ActionRowBuilder().addComponents(color)
+  );
+
+  return modal;
+}
+
+function customSelect(messages, customId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder('Choose a message')
+      .addOptions(
+        Object.entries(messages).slice(0, 25).map(([key, item]) => ({
+          label: key,
+          description: (item.title || 'Custom message').slice(0, 100),
+          value: key
+        }))
+      )
+  );
+}
+
+const customMessageCommand = new SlashCommandBuilder()
+  .setName('custommsgsender')
+  .setDescription('Create keyword-triggered custom embeds');
