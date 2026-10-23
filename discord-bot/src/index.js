@@ -1595,7 +1595,7 @@ client.on('interactionCreate', async i => {
         });
       }
 
-      if (action === 'set') return configureMemberEmbed(i, kind);
+      if (action === 'set' && kind === 'leave') return configureMemberEmbed(i, kind);
 
       const settings = getGuildCommunity(i.guildId);
       const current = settings[kind];
@@ -1612,7 +1612,7 @@ client.on('interactionCreate', async i => {
 
       if (action === 'show') {
         if (!current?.message) {
-          return i.reply({ content: `No ${kind} embed is configured. Use /${kind} set to create one.`, flags: MessageFlags.Ephemeral });
+          return i.reply({ content: `No ${kind} embed is configured. Use /${kind} panel to open its setup dashboard.`, flags: MessageFlags.Ephemeral });
         }
 
         const savedMessage = current.message.length > 1000
@@ -1635,7 +1635,7 @@ client.on('interactionCreate', async i => {
 
       if (action === 'test') {
         if (!current?.message) {
-          return i.reply({ content: `Set up the ${kind} embed first with /${kind} set.`, flags: MessageFlags.Ephemeral });
+          return i.reply({ content: `Set up the ${kind} embed first with /${kind} panel.`, flags: MessageFlags.Ephemeral });
         }
 
         const member = await i.guild.members.fetch(i.user.id);

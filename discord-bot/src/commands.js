@@ -26,15 +26,17 @@ const reasonOption = name =>
     .setDescription('Reason for this action')
     .setRequired(true);
 
-const memberMessageCommand = (name, description) =>
-  new SlashCommandBuilder()
+const memberMessageCommand = (name, description) => {
+  const command = new SlashCommandBuilder()
     .setName(name)
     .setDescription(description)
     .addSubcommand(s =>
       s.setName('panel')
         .setDescription('Open the interactive setup dashboard')
-    )
-    .addSubcommand(s =>
+    );
+
+  if (name !== 'welcome') {
+    command.addSubcommand(s =>
       s.setName('set')
         .setDescription('Create or edit the member message')
         .addChannelOption(o =>
@@ -73,7 +75,10 @@ const memberMessageCommand = (name, description) =>
             .setRequired(false)
             .setMaxLength(100)
         )
-    )
+    );
+  }
+
+  return command
     .addSubcommand(s =>
       s.setName('test')
         .setDescription('Send a preview to the configured channel')
@@ -86,6 +91,7 @@ const memberMessageCommand = (name, description) =>
       s.setName('disable')
         .setDescription('Turn off this member message')
     );
+};
 
 const matchModeChoices = [
   { name: 'Contains phrase', value: 'contains' },

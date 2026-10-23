@@ -59,8 +59,7 @@ Discord:
 - `/takecoins player:<Minecraft username> amount:<positive number> reason:<text>`
 - `/setup` — open the staff-only welcome setup dashboard shown as an interactive panel.
 - `/welcome panel` and `/leave panel` — open the matching welcome or leave dashboard.
-- `/welcome set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member join card (staff only).
-- `/leave set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member leave card (staff only).
+- `/leave set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member leave card (staff only). Configure welcome messages through `/welcome panel` or `/setup`.
 - `/welcome test|show|disable` and `/leave test|show|disable` — preview, inspect, or turn off each card (staff only).
 - Welcome and leave messages send editable text above a generated card with the member's avatar, account username, server name, and member number. The configured image URL is downloaded and cached in the bot's data folder so Discord upload links continue working after their URL expires. A dark gradient is used if no image is set.
 - The dashboards include channel selection, enable/disable, preview, message and image editing, placeholders, reset, up to five link buttons, accent color, and member ping/message auto-delete settings.
