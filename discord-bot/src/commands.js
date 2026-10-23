@@ -25,6 +25,13 @@ const reasonOption = name =>
     .setDescription('Reason for this action')
     .setRequired(true);
 
+const matchModeChoices = [
+  { name: 'Contains phrase', value: 'contains' },
+  { name: 'Exact message', value: 'exact' },
+  { name: 'Starts with', value: 'starts_with' },
+  { name: 'Ends with', value: 'ends_with' }
+];
+
 export const commands = [
   new SlashCommandBuilder()
     .setName('help')
@@ -182,7 +189,7 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName('autoresponder')
-    .setDescription('Create and manage colorful automatic word or phrase replies (admin only)')
+    .setDescription('Create and manage automatic keyword or phrase replies (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s =>
       s.setName('add')
@@ -198,6 +205,12 @@ export const commands = [
             .setDescription('Message text shown inside the reply embed')
             .setRequired(true)
             .setMaxLength(2000)
+        )
+        .addStringOption(o =>
+          o.setName('matchmode')
+            .setDescription('How a message must match this trigger')
+            .setRequired(false)
+            .addChoices(...matchModeChoices)
         )
         .addStringOption(o =>
           o.setName('title')
@@ -247,11 +260,73 @@ export const commands = [
         )
     )
     .addSubcommand(s =>
+      s.setName('editreply')
+        .setDescription('Edit the reply text of an auto-responder')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Trigger word or phrase to edit')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+        .addStringOption(o =>
+          o.setName('reply')
+            .setDescription('New reply text')
+            .setRequired(true)
+            .setMaxLength(2000)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('editmatchmode')
+        .setDescription('Edit how an auto-responder matches messages')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Trigger word or phrase to edit')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+        .addStringOption(o =>
+          o.setName('mode')
+            .setDescription('How a message must match this trigger')
+            .setRequired(true)
+            .addChoices(...matchModeChoices)
+        )
+    )
+    .addSubcommand(s =>
       s.setName('delete')
         .setDescription('Delete an auto-reply')
         .addStringOption(o =>
           o.setName('trigger')
             .setDescription('Trigger word or phrase to delete')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('remove')
+        .setDescription('Remove an auto-responder')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Trigger word or phrase to remove')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('show')
+        .setDescription('Show an auto-responder')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Trigger word or phrase to show')
+            .setRequired(true)
+            .setMaxLength(100)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('showraw')
+        .setDescription('Show an auto-responder reply as plain text')
+        .addStringOption(o =>
+          o.setName('trigger')
+            .setDescription('Trigger word or phrase to show')
             .setRequired(true)
             .setMaxLength(100)
         )

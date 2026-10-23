@@ -206,6 +206,17 @@ function validTrigger(trigger) {
   );
 }
 
+const AUTO_REPLY_MATCH_MODES = new Set(['contains', 'exact', 'starts_with', 'ends_with']);
+
+function matchModeLabel(mode) {
+  return ({
+    contains: 'Contains phrase',
+    exact: 'Exact message',
+    starts_with: 'Starts with',
+    ends_with: 'Ends with'
+  })[mode] || 'Contains phrase';
+}
+
 function normalizeHexColor(value, fallback = '22C7D6') {
   if (value == null) return fallback;
 
@@ -395,7 +406,7 @@ client.on('interactionCreate', async i => {
         return i.reply({
           embeds: [autoResponderNotice(
             '✨ Choose an Auto-Responder Action',
-            'Available options: **add**, **edit**, **delete**, **list**, **help**, and **panel**.\n\nStart with `/autoresponder add` to create a colorful reply.'
+            'Available options: **add**, **editreply**, **editmatchmode**, **remove**, **show**, **showraw**, **list**, **help**, and **panel**.\n\nStart with `/autoresponder add` to create a colorful reply.'
           )],
           flags: MessageFlags.Ephemeral
         });
@@ -414,10 +425,11 @@ client.on('interactionCreate', async i => {
       if (action === 'add') {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
         const reply = i.options.getString('reply').trim();
+        const matchMode = i.options.getString('matchmode') || 'contains';
         const title = i.options.getString('title')?.trim() || '✨ Auto-Reply';
         const color = normalizeHexColor(i.options.getString('color'));
 
-        if (!validTrigger(trigger) || !reply) {
+        if (!validTrigger(trigger) || !reply || !AUTO_REPLY_MATCH_MODES.has(matchMode)) {
           return i.reply({
             embeds: [autoResponderNotice(
               '⚠️ Check Your Auto-Reply',
@@ -449,13 +461,13 @@ client.on('interactionCreate', async i => {
           });
         }
 
-        setAutoReply(guildMessages, trigger, { trigger, reply, title, color });
+        setAutoReply(guildMessages, trigger, { trigger, reply, title, color, matchMode });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
         return i.reply({
           embeds: [autoResponderNotice(
             '✅ Auto-Reply Added',
-            `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 500)}\n**Appearance:** ${title} · \`#${color}\`\n\nIt is active now.`,
+            `**Trigger:** \`${trigger}\`\n**Match mode:** ${matchModeLabel(matchMode)}\n**Reply:** ${reply.slice(0, 500)}\n**Appearance:** ${title} · \`#${color}\`\n\nIt is active now.`,
             parseInt(color, 16)
           )],
           flags: MessageFlags.Ephemeral
@@ -499,7 +511,15 @@ client.on('interactionCreate', async i => {
         }
 
         delete guildMessages[currentTrigger];
-        setAutoReply(guildMessages, trigger, { trigger, reply, title, color });
+        setAutoReply(guildMessages, trigger, {
+          ...existing,
+          trigger,
+          reply,
+          body: reply,
+          title,
+          color,
+          matchMode: existing.matchMode || 'contains'
+        });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
         return i.reply({
@@ -508,7 +528,63 @@ client.on('interactionCreate', async i => {
         });
       }
 
-      if (action === 'delete') {
+      if (action === 'editreply') {
+        const trigger = normalizeTrigger(i.options.getString('trigger'));
+        const reply = i.options.getString('reply').trim();
+        const existing = Object.hasOwn(guildMessages, trigger)
+          ? guildMessages[trigger]
+          : null;
+
+        if (!existing) {
+          return i.reply({ content: `No auto-reply was found for **${trigger}**.`, flags: MessageFlags.Ephemeral });
+        }
+
+        if (!reply) {
+          return i.reply({ content: 'Enter a non-empty reply.', flags: MessageFlags.Ephemeral });
+        }
+
+        setAutoReply(guildMessages, trigger, { ...existing, trigger, reply, body: reply });
+        saveGuildAutoReplies(i.guildId, guildMessages);
+
+        return i.reply({
+          embeds: [autoResponderNotice(
+            '✏️ Auto-Reply Updated',
+            `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 1000)}`,
+            parseInt(normalizeHexColor(existing.color) || '22C7D6', 16)
+          )],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'editmatchmode') {
+        const trigger = normalizeTrigger(i.options.getString('trigger'));
+        const matchMode = i.options.getString('mode');
+        const existing = Object.hasOwn(guildMessages, trigger)
+          ? guildMessages[trigger]
+          : null;
+
+        if (!existing) {
+          return i.reply({ content: `No auto-reply was found for **${trigger}**.`, flags: MessageFlags.Ephemeral });
+        }
+
+        if (!AUTO_REPLY_MATCH_MODES.has(matchMode)) {
+          return i.reply({ content: 'Choose a supported match mode.', flags: MessageFlags.Ephemeral });
+        }
+
+        setAutoReply(guildMessages, trigger, { ...existing, trigger, matchMode });
+        saveGuildAutoReplies(i.guildId, guildMessages);
+
+        return i.reply({
+          embeds: [autoResponderNotice(
+            '🎯 Match Mode Updated',
+            `**Trigger:** \`${trigger}\`\n**Match mode:** ${matchModeLabel(matchMode)}\n\nThis setting is active now.`,
+            parseInt(normalizeHexColor(existing.color) || '22C7D6', 16)
+          )],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'delete' || action === 'remove') {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
 
         if (!Object.hasOwn(guildMessages, trigger)) {
@@ -526,12 +602,49 @@ client.on('interactionCreate', async i => {
         });
       }
 
+      if (action === 'show' || action === 'showraw') {
+        const trigger = normalizeTrigger(i.options.getString('trigger'));
+        const item = Object.hasOwn(guildMessages, trigger)
+          ? guildMessages[trigger]
+          : null;
+
+        if (!item) {
+          return i.reply({
+            embeds: [autoResponderNotice('🔎 Auto-Reply Not Found', `No auto-reply was found for **${trigger}**.`, 0xf39c12)],
+            flags: MessageFlags.Ephemeral
+          });
+        }
+
+        const reply = item.reply || item.body || 'This auto-reply has no message yet.';
+        if (action === 'showraw') {
+          return i.reply({ content: reply.slice(0, 2000), flags: MessageFlags.Ephemeral });
+        }
+
+        const color = normalizeHexColor(item.color) || '22C7D6';
+        return i.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(parseInt(color, 16))
+              .setAuthor({ name: 'LEGACY MC • AUTO-RESPONDER' })
+              .setTitle(item.title || '✨ Auto-Reply')
+              .setDescription(reply.slice(0, 4000))
+              .addFields(
+                { name: 'Trigger', value: trigger.slice(0, 100), inline: true },
+                { name: 'Match mode', value: matchModeLabel(item.matchMode || 'contains'), inline: true },
+                { name: 'Embed color', value: `#${color}`, inline: true }
+              )
+              .setTimestamp()
+          ],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
       if (action === 'list') {
         const entries = Object.entries(guildMessages);
         const embed = autoResponderNotice(
           '💬 Auto-Reply Library',
           entries.length
-            ? `**${entries.length}/25** replies are active. They trigger when a whole word or phrase appears.`
+            ? `**${entries.length}/25** replies are active. Each reply uses its selected match mode.`
             : 'No auto-replies are configured yet. Use `/autoresponder add` to create one.'
         );
 
@@ -539,7 +652,7 @@ client.on('interactionCreate', async i => {
           const reply = (item.reply || item.body || 'No reply text').replace(/\s+/gu, ' ');
           embed.addFields({
             name: `🔑 ${trigger}`.slice(0, 256),
-            value: `✨ ${(item.title || 'Auto-Reply').slice(0, 28)}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\``,
+            value: `✨ ${(item.title || 'Auto-Reply').slice(0, 28)}\n🎯 ${matchModeLabel(item.matchMode || 'contains')}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\``,
             inline: true
           });
         }
@@ -559,15 +672,15 @@ client.on('interactionCreate', async i => {
           .addFields(
             {
               name: '➕ Add a reply',
-              value: '`/autoresponder add`\n**Required:** `trigger`, `reply`\n**Optional:** `title`, `color`'
+              value: '`/autoresponder add`\n**Required:** `trigger`, `reply`\n**Optional:** `matchmode`, `title`, `color`'
             },
             {
               name: '✏️ Edit a reply',
-              value: '`/autoresponder edit`\n**Required:** existing `trigger`, new `reply`\n**Optional:** `new-trigger`, `title`, `color`'
+              value: '`/autoresponder editreply` changes only the reply.\n`/autoresponder edit` can also rename the trigger or change title and color.'
             },
             {
               name: '🧰 More options',
-              value: '`/autoresponder delete` removes a trigger.\n`/autoresponder list` shows saved replies.\n`/autoresponder panel` opens the embed editor.'
+              value: '`/autoresponder editreply` changes reply text.\n`/autoresponder editmatchmode` changes matching.\n`/autoresponder remove` deletes a trigger.\n`/autoresponder show` and `showraw` inspect a reply.\n`/autoresponder list` lists replies; `panel` opens the embed editor.'
             },
             {
               name: '🎨 Example',
@@ -575,7 +688,7 @@ client.on('interactionCreate', async i => {
             },
             {
               name: '💡 Trigger matching',
-              value: 'Triggers ignore letter case and match as complete words or phrases. A trigger `ip` matches “what is the IP?” but not “ship”.'
+              value: '`contains` (default) matches a complete word or phrase; `exact` requires the whole message; `starts_with` and `ends_with` require the trigger at that edge. Matching ignores letter case.'
             }
           )
           .setFooter({ text: 'Up to 25 auto-replies per server • Replies activate immediately' })
@@ -625,7 +738,7 @@ client.on('interactionCreate', async i => {
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
-          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder help` · `/autoresponder add` · `/autoresponder edit` · `/autoresponder delete` · `/autoresponder list` · `/autoresponder panel`' }
+          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add` · `/autoresponder editreply` · `/autoresponder editmatchmode` · `/autoresponder list` · `/autoresponder remove` · `/autoresponder show` · `/autoresponder showraw` · `/autoresponder panel`' }
         );
 
       return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
@@ -994,6 +1107,10 @@ client.on('interactionCreate', async i => {
         customEditOrigins.delete(key);
       }
 
+      const matchMode = oldTrigger
+        ? messages[oldTrigger]?.matchMode || 'contains'
+        : 'contains';
+
       if (Object.hasOwn(messages, trigger) && trigger !== oldTrigger) {
         return i.reply({
           content: `The trigger **${trigger}** already exists. Choose a different one.`,
@@ -1012,7 +1129,13 @@ client.on('interactionCreate', async i => {
         delete messages[oldTrigger];
       }
 
-      setAutoReply(messages, trigger, { trigger, title, body, color: color.toUpperCase() });
+      setAutoReply(messages, trigger, {
+        trigger,
+        title,
+        body,
+        color: color.toUpperCase(),
+        matchMode
+      });
 
       return i.reply({
         content: `Draft updated for **${trigger}**. Click **Save Changes** in the autoresponder panel to activate it.`,
@@ -1035,11 +1158,26 @@ client.on('interactionCreate', async i => {
   }
 });
 
-function triggerMatches(content, trigger) {
+function triggerMatches(content, trigger, matchMode = 'contains') {
+  const normalizedTrigger = normalizeTrigger(trigger);
+
+  if (matchMode === 'exact') {
+    return content.trim().replace(/\s+/gu, ' ').toLowerCase() === normalizedTrigger;
+  }
+
   const escaped = trigger
     .split(/\s+/u)
     .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('\\s+');
+
+  if (matchMode === 'starts_with') {
+    return new RegExp(`^${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(content.trimStart());
+  }
+
+  if (matchMode === 'ends_with') {
+    return new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}$`, 'iu').test(content.trimEnd());
+  }
+
   const pattern = new RegExp(
     `(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`,
     'iu'
@@ -1055,7 +1193,7 @@ client.on('messageCreate', async message => {
 
   const matches = Object.entries(customMessages[message.guild.id] || {})
     .sort(([left], [right]) => right.length - left.length)
-    .find(([trigger]) => triggerMatches(message.content, trigger));
+    .find(([trigger, item]) => triggerMatches(message.content, trigger, item.matchMode || 'contains'));
 
   if (!matches) return;
   const [, item] = matches;

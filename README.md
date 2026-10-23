@@ -68,12 +68,13 @@ Discord:
 - `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
-- `/autoresponder add trigger:<word or phrase> reply:<text> title:<optional> color:<optional HEX>` — add a colorful embed auto-reply.
-- `/autoresponder edit trigger:<existing trigger> reply:<new text> new-trigger:<optional> title:<optional> color:<optional HEX>` — edit a reply and optionally its trigger or appearance.
-- `/autoresponder delete trigger:<trigger>` and `/autoresponder list` — manage saved replies.
-- `/autoresponder help` shows options and examples; `/autoresponder panel` opens the visual embed editor. Up to 25 triggers are supported per server.
+- `/autoresponder add trigger:<word or phrase> reply:<text> matchmode:<optional> title:<optional> color:<optional HEX>` — add a colorful embed auto-reply.
+- `/autoresponder editreply trigger:<trigger> reply:<new text>` — change a saved reply. `/autoresponder editmatchmode trigger:<trigger> mode:<contains|exact|starts_with|ends_with>` — change how its trigger matches.
+- `/autoresponder show trigger:<trigger>` and `/autoresponder showraw trigger:<trigger>` — inspect a saved embed or its plain reply text.
+- `/autoresponder remove trigger:<trigger>` and `/autoresponder list` — manage saved replies. `/autoresponder delete` remains available as an alias for `remove`.
+- `/autoresponder edit` can also change the reply, trigger, title, or color. `/autoresponder help` shows options and examples; `/autoresponder panel` opens the visual embed editor. Up to 25 triggers are supported per server.
 
-The add, edit, and delete commands save immediately. Set the optional embed title and HEX color (for example, `#22C7D6`); the default is a cyan auto-reply embed. The bot replies when a message contains the trigger as a complete word or phrase, ignoring case (for example, `server ip` matches `What is the SERVER IP?`, but `ip` does not match `ship`). The panel lets admins edit embed title/message/color and requires clicking **Save Changes**. Run `npm run deploy` after updating the bot to register the command.
+The add, edit, and remove commands save immediately. Set the optional embed title and HEX color (for example, `#22C7D6`); the default is a cyan auto-reply embed. `contains` is the default match mode and matches a complete word or phrase, ignoring case; `exact`, `starts_with`, and `ends_with` are also available. The panel lets admins edit embed title/message/color and requires clicking **Save Changes**. Run `npm run deploy` after updating the bot to register the command.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.
