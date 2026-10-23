@@ -272,9 +272,7 @@ function customEmbed(item) {
     .setColor(parseInt(hex, 16))
     .setTitle(item.title || '✨ Auto-Reply')
     .setDescription(reply)
-    .addFields({ name: '🔑 Trigger', value: `\`${item.trigger || 'custom'}\``, inline: true })
-    .setFooter({ text: 'LEGACY MC • Automatic response' })
-    .setTimestamp();
+    .addFields({ name: '🔑 Trigger', value: `\`${item.trigger || 'custom'}\``, inline: true });
 }
 
 function autoReplyPayload(item) {
