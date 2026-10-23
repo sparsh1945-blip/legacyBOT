@@ -73,7 +73,7 @@ Discord:
 - `/welcome set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member join card (staff only).
 - `/leave set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member leave card (staff only).
 - `/welcome test|show|disable` and `/leave test|show|disable` — preview, inspect, or turn off each card (staff only).
-- Welcome and leave messages send editable text above a generated card with the member's avatar, display name, server name, and member number. The configured image URL is used as the card background; a dark gradient is used if no image is set.
+- Welcome and leave messages send editable text above a generated card with the member's avatar, account username, server name, and member number. The configured image URL is used as the card background; a dark gradient is used if no image is set.
 - The dashboards include channel selection, enable/disable, preview, message and image editing, placeholders, reset, up to five link buttons, accent color, and member ping/message auto-delete settings.
 - `/invites check user:<optional member>` — show total joins, active invited members, and departures; available to everyone.
 - `/invites leaderboard` — show the top inviters by active members; available to everyone.

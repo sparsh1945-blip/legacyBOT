@@ -669,11 +669,11 @@ async function buildMemberCard(member, settings, inviterId, kind) {
   context.fillStyle = '#ffffff';
   context.fillRect(445, 261, Math.min(context.measureText(heading).width, 330), 4);
 
-  const displayName = member.displayName || member.user.username;
-  const nameSize = fitCanvasText(context, displayName, 690, 76, 32);
+  const username = member.user.username;
+  const nameSize = fitCanvasText(context, username, 690, 76, 32);
   context.font = `700 ${nameSize}px Arial, sans-serif`;
   context.fillStyle = '#ffffff';
-  context.fillText(displayName, 445, 350, 690);
+  context.fillText(username, 445, 350, 690);
 
   const subline = `${member.guild.name}  •  Member #${member.guild.memberCount}`;
   context.font = '400 30px Arial, sans-serif';
@@ -697,7 +697,7 @@ async function buildMemberCard(member, settings, inviterId, kind) {
     context.fillStyle = '#ffffff';
     context.font = '700 112px Arial, sans-serif';
     context.textAlign = 'center';
-    context.fillText(displayName.slice(0, 1).toUpperCase(), avatarX + avatarSize / 2, avatarY + avatarSize / 2);
+    context.fillText(username.slice(0, 1).toUpperCase(), avatarX + avatarSize / 2, avatarY + avatarSize / 2);
   }
   context.restore();
 
