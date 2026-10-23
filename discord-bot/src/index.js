@@ -32,6 +32,7 @@ const nvidiaApiKey = process.env.NVIDIA_API_KEY?.trim();
 const nvidiaModel = process.env.NVIDIA_MODEL?.trim() || 'nvidia/nemotron-3-ultra-550b-a55b';
 const aiCooldowns = new Map();
 const aiSetupWarnings = new Set();
+const sneakaiChannelModes = new Map();
 const port = Number(process.env.PORT || 8787);
 
 if (!token || !apiToken) {
@@ -2603,8 +2604,27 @@ function triggerMatches(content, trigger, matchMode = 'contains') {
 client.on('messageCreate', async message => {
   if (message.author.bot || !message.guild) return;
 
-  const aiChannelIds = sneakaiChannels(message.guild.id);
-  if (aiChannelIds.includes(message.channelId)) {
+  const botMentioned = Boolean(client.user && message.mentions.users.has(client.user.id));
+  const mentionPattern = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
+  const mentionedText = mentionPattern ? message.content.replace(mentionPattern, '').trim() : '';
+
+  if (botMentioned && /^stop\b/i.test(mentionedText)) {
+    sneakaiChannelModes.set(message.channelId, false);
+    await message.reply({
+      content: 'SneakAI is stopped in this channel. Mention me again to start a new session.',
+      allowedMentions: { parse: [] }
+    }).catch(() => {});
+    return;
+  }
+
+  if (botMentioned) sneakaiChannelModes.set(message.channelId, true);
+
+  const configuredAiChannel = sneakaiChannels(message.guild.id).includes(message.channelId);
+  const aiActive = sneakaiChannelModes.has(message.channelId)
+    ? sneakaiChannelModes.get(message.channelId)
+    : configuredAiChannel;
+
+  if (aiActive) {
     if (!nvidiaApiKey) {
       const warningKey = `${message.guild.id}:${message.channelId}`;
       if (!aiSetupWarnings.has(warningKey)) {
@@ -2617,8 +2637,16 @@ client.on('messageCreate', async message => {
       return;
     }
 
-    const question = message.content.trim();
-    if (!question) return;
+    const question = botMentioned ? mentionedText : message.content.trim();
+    if (!question) {
+      if (botMentioned) {
+        await message.reply({
+          content: 'SneakAI is active in this channel. Ask a question here, or mention me with `stop` to end the session.',
+          allowedMentions: { parse: [] }
+        }).catch(() => {});
+      }
+      return;
+    }
 
     const seconds = aiCooldownRemaining(message.author.id);
     if (seconds > 0) {
