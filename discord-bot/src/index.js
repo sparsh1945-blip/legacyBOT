@@ -1317,7 +1317,7 @@ function memberPanelConfigEmbed(guildId, kind) {
 client.once('clientReady', async () => {
   console.log(`Discord bot logged in as ${client.user.tag}`);
   client.user.setPresence({
-    activities: [{ name: 'Made by @lord_and_leged', type: ActivityType.Playing }],
+    activities: [{ name: 'Made by @lord_and_legned', type: ActivityType.Playing }],
     status: 'online'
   });
   await Promise.allSettled(
