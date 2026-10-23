@@ -1347,9 +1347,9 @@ client.on('interactionCreate', async i => {
 
   try {
     if (command === 'setupsneakai') {
-      if (!isAdmin(i)) return deny(i);
-      if (!i.guildId) return deny(i, 'Use this command inside a server.');
-      return i.reply({
+      if (!isAdmin(i)) return await deny(i);
+      if (!i.guildId) return await deny(i, 'Use this command inside a server.');
+      return await i.reply({
         embeds: [sneakaiPanelEmbed(i.guildId)],
         components: sneakaiPanelComponents(),
         flags: MessageFlags.Ephemeral
@@ -1357,16 +1357,16 @@ client.on('interactionCreate', async i => {
     }
 
     if (command === 'ask') {
-      if (!i.guildId) return deny(i, 'Use this command inside a server.');
+      if (!i.guildId) return await deny(i, 'Use this command inside a server.');
       const aiChannelId = getGuildCommunity(i.guildId).sneakai.channelId;
       if (!aiChannelId) {
-        return i.reply({ content: 'SneakAI has not been set up yet. Staff can run `/setupsneakai`.', flags: MessageFlags.Ephemeral });
+        return await i.reply({ content: 'SneakAI has not been set up yet. Staff can run `/setupsneakai`.', flags: MessageFlags.Ephemeral });
       }
       if (i.channelId !== aiChannelId) {
-        return i.reply({ content: `Use SneakAI in <#${aiChannelId}>.`, flags: MessageFlags.Ephemeral });
+        return await i.reply({ content: `Use SneakAI in <#${aiChannelId}>.`, flags: MessageFlags.Ephemeral });
       }
       if (!nvidiaApiKey) {
-        return i.reply({
+        return await i.reply({
           content: 'The AI assistant is not configured yet. The bot owner needs to set `NVIDIA_API_KEY` in the bot environment and restart it.',
           flags: MessageFlags.Ephemeral
         });
@@ -1374,7 +1374,7 @@ client.on('interactionCreate', async i => {
 
       const seconds = aiCooldownRemaining(i.user.id);
       if (seconds > 0) {
-        return i.reply({
+        return await i.reply({
           content: `Please wait ${seconds} second${seconds === 1 ? '' : 's'} before asking again.`,
           flags: MessageFlags.Ephemeral
         });
@@ -1384,10 +1384,10 @@ client.on('interactionCreate', async i => {
       await i.deferReply();
       try {
         const answer = await askNvidia(i.options.getString('question', true));
-        return i.editReply({ content: aiResponseText(answer), allowedMentions: { parse: [] } });
+        return await i.editReply({ content: aiResponseText(answer), allowedMentions: { parse: [] } });
       } catch (error) {
         console.error('NVIDIA AI request failed:', error.status || error.name || 'unknown error');
-        return i.editReply({ content: nvidiaFailureText(error), allowedMentions: { parse: [] } });
+        return await i.editReply({ content: nvidiaFailureText(error), allowedMentions: { parse: [] } });
       }
     }
 
@@ -1967,7 +1967,7 @@ client.on('interactionCreate', async i => {
 
   try {
     if (i.isButton() && i.customId === 'legacy_sneakai_requirements') {
-      return i.reply({ embeds: [await sneakaiRequirementsEmbed(i.guild)], flags: MessageFlags.Ephemeral });
+      return await i.reply({ embeds: [await sneakaiRequirementsEmbed(i.guild)], flags: MessageFlags.Ephemeral });
     }
 
     if (i.isButton() && i.customId === 'legacy_sneakai_set_channel') {
@@ -1975,7 +1975,7 @@ client.on('interactionCreate', async i => {
         .setCustomId('legacy_sneakai_select_channel')
         .setPlaceholder('Choose the SneakAI text channel')
         .setChannelTypes(ChannelType.GuildText);
-      return i.update({
+      return await i.update({
         content: 'Choose the text channel where SneakAI should answer normal messages.',
         embeds: [],
         components: [
@@ -1989,7 +1989,7 @@ client.on('interactionCreate', async i => {
     }
 
     if (i.isButton() && i.customId === 'legacy_sneakai_back') {
-      return i.update({
+      return await i.update({
         content: null,
         embeds: [sneakaiPanelEmbed(i.guildId)],
         components: sneakaiPanelComponents()
@@ -1998,11 +1998,11 @@ client.on('interactionCreate', async i => {
 
     if (i.isChannelSelectMenu() && i.customId === 'legacy_sneakai_select_channel') {
       const channelId = i.values[0];
-      if (!channelId) return i.reply({ content: 'Choose a text channel first.', flags: MessageFlags.Ephemeral });
+      if (!channelId) return await i.reply({ content: 'Choose a text channel first.', flags: MessageFlags.Ephemeral });
       getGuildCommunity(i.guildId).sneakai.channelId = channelId;
       aiSetupWarnings.delete(`${i.guildId}:${channelId}`);
       saveCommunitySettings();
-      return i.update({
+      return await i.update({
         content: `SneakAI will answer normal messages in <#${channelId}> only.`,
         embeds: [sneakaiPanelEmbed(i.guildId)],
         components: sneakaiPanelComponents()
