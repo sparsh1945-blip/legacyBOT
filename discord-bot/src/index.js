@@ -103,9 +103,9 @@ async function askNvidia(question) {
         },
         { role: 'user', content: question }
       ],
-      temperature: 0.6,
-      top_p: 0.95,
+      temperature: 0.7,
       max_tokens: 900,
+      reasoning_effort: 'none',
       stream: false
     }),
     signal: AbortSignal.timeout(45000)
@@ -258,7 +258,11 @@ function getGuildCommunity(guildId) {
 
   const settings = communitySettings[guildId];
   if (!settings.sneakai || typeof settings.sneakai !== 'object') settings.sneakai = {};
-  settings.sneakai.channelId ??= null;
+  if (!Array.isArray(settings.sneakai.channelIds)) {
+    settings.sneakai.channelIds = settings.sneakai.channelId ? [settings.sneakai.channelId] : [];
+  }
+  settings.sneakai.channelIds = [...new Set(settings.sneakai.channelIds.filter(id => typeof id === 'string' && id))];
+  delete settings.sneakai.channelId;
   if (!settings.invites || typeof settings.invites !== 'object') {
     settings.invites = { logChannelId: null, totals: {}, invitees: {}, unattributedJoins: 0 };
   }
@@ -273,17 +277,21 @@ function getGuildCommunity(guildId) {
   return settings;
 }
 
+function sneakaiChannels(guildId) {
+  return getGuildCommunity(guildId).sneakai.channelIds;
+}
+
 function sneakaiPanelEmbed(guildId) {
-  const config = getGuildCommunity(guildId).sneakai;
-  const channelStatus = config.channelId ? `<#${config.channelId}>` : 'Not selected';
-  const ready = Boolean(config.channelId && nvidiaApiKey);
+  const channels = sneakaiChannels(guildId);
+  const channelStatus = channels.length ? channels.map(id => `<#${id}>`).join('\n').slice(0, 1000) : 'None selected';
+  const ready = Boolean(channels.length && nvidiaApiKey);
 
   return new EmbedBuilder()
     .setColor(ready ? 0x2ecc71 : 0xf1c40f)
     .setTitle('🤖 SneakAI Setup')
-    .setDescription('Choose one text channel where members can talk to SneakAI normally. It will answer messages only in that channel.')
+    .setDescription('Add one or more text channels where members can talk to SneakAI normally. It will answer messages only in the selected channels.')
     .addFields(
-      { name: 'AI Channel', value: channelStatus, inline: true },
+      { name: `AI Channels (${channels.length}/25)`, value: channelStatus, inline: true },
       { name: 'Status', value: ready ? 'Ready' : 'Requirements needed', inline: true }
     )
     .setFooter({ text: 'Only server administrators can change this setup.' });
@@ -292,9 +300,13 @@ function sneakaiPanelEmbed(guildId) {
 function sneakaiPanelComponents() {
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId('legacy_sneakai_set_channel')
-      .setLabel('Set Channel')
+      .setCustomId('legacy_sneakai_add_channel')
+      .setLabel('Add Channel')
       .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('legacy_sneakai_remove_channel')
+      .setLabel('Remove Channel')
+      .setStyle(ButtonStyle.Danger),
     new ButtonBuilder()
       .setCustomId('legacy_sneakai_requirements')
       .setLabel('Requirements')
@@ -303,30 +315,28 @@ function sneakaiPanelComponents() {
 }
 
 async function sneakaiRequirementsEmbed(guild) {
-  const config = getGuildCommunity(guild.id).sneakai;
-  const channel = config.channelId
-    ? guild.channels.cache.get(config.channelId) || await guild.channels.fetch(config.channelId).catch(() => null)
-    : null;
-  let permissions = 'Select a text channel first.';
-
-  if (channel && guild.members.me) {
-    const channelPermissions = channel.permissionsFor(guild.members.me);
+  const channels = sneakaiChannels(guild.id);
+  const permissionLines = [];
+  for (const channelId of channels) {
+    const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel) {
+      permissionLines.push(`<#${channelId}>: ❌ unavailable`);
+      continue;
+    }
+    const permissions = guild.members.me ? channel.permissionsFor(guild.members.me) : null;
     const missing = [];
-    if (!channelPermissions?.has(PermissionFlagsBits.ViewChannel)) missing.push('View Channel');
-    if (!channelPermissions?.has(PermissionFlagsBits.SendMessages)) missing.push('Send Messages');
-    permissions = missing.length ? `❌ Missing: ${missing.join(', ')}` : '✅ Can view and reply in the selected channel';
-  } else if (config.channelId) {
-    permissions = '❌ The selected channel is unavailable to the bot.';
+    if (!permissions?.has(PermissionFlagsBits.ViewChannel)) missing.push('View Channel');
+    if (!permissions?.has(PermissionFlagsBits.SendMessages)) missing.push('Send Messages');
+    permissionLines.push(`<#${channelId}>: ${missing.length ? `❌ Missing ${missing.join(', ')}` : '✅ Ready'}`);
   }
 
   return new EmbedBuilder()
     .setColor(0x22c7d6)
     .setTitle('SneakAI Requirements')
-    .setDescription('SneakAI replies to normal text messages only in the selected AI channel.')
+    .setDescription('SneakAI replies to normal text messages only in its selected channels.')
     .addFields(
       { name: 'NVIDIA API Key', value: nvidiaApiKey ? '✅ Configured' : '❌ Add `NVIDIA_API_KEY` to the bot `.env`, then restart it.' },
-      { name: 'AI Channel', value: config.channelId ? `<#${config.channelId}>` : '❌ Choose one with **Set Channel**.' },
-      { name: 'Bot Channel Permissions', value: permissions },
+      { name: 'AI Channels', value: channels.length ? permissionLines.join('\n').slice(0, 1000) : '❌ Add a text channel with **Add Channel**.' },
       { name: 'Message Content Intent', value: 'Enable **Message Content Intent** in the Discord Developer Portal for the bot application.' }
     );
 }
@@ -1358,12 +1368,12 @@ client.on('interactionCreate', async i => {
 
     if (command === 'ask') {
       if (!i.guildId) return await deny(i, 'Use this command inside a server.');
-      const aiChannelId = getGuildCommunity(i.guildId).sneakai.channelId;
-      if (!aiChannelId) {
+      const aiChannelIds = sneakaiChannels(i.guildId);
+      if (!aiChannelIds.length) {
         return await i.reply({ content: 'SneakAI has not been set up yet. Staff can run `/setupsneakai`.', flags: MessageFlags.Ephemeral });
       }
-      if (i.channelId !== aiChannelId) {
-        return await i.reply({ content: `Use SneakAI in <#${aiChannelId}>.`, flags: MessageFlags.Ephemeral });
+      if (!aiChannelIds.includes(i.channelId)) {
+        return await i.reply({ content: `Use SneakAI in ${aiChannelIds.map(id => `<#${id}>`).join(', ')}.`, flags: MessageFlags.Ephemeral });
       }
       if (!nvidiaApiKey) {
         return await i.reply({
@@ -1960,7 +1970,7 @@ client.on('interactionCreate', async i => {
 });
 
 client.on('interactionCreate', async i => {
-  if (!i.isButton() && !i.isChannelSelectMenu()) return;
+  if (!i.isButton() && !i.isChannelSelectMenu() && !i.isStringSelectMenu()) return;
   if (!i.customId.startsWith('legacy_sneakai_')) return;
   if (!i.guildId) return i.reply({ content: 'Use this inside a server.', flags: MessageFlags.Ephemeral }).catch(() => {});
   if (!isAdmin(i)) return i.reply({ content: 'Only server administrators can manage SneakAI setup.', flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1970,13 +1980,48 @@ client.on('interactionCreate', async i => {
       return await i.reply({ embeds: [await sneakaiRequirementsEmbed(i.guild)], flags: MessageFlags.Ephemeral });
     }
 
-    if (i.isButton() && i.customId === 'legacy_sneakai_set_channel') {
+    if (i.isButton() && i.customId === 'legacy_sneakai_add_channel') {
+      const channels = sneakaiChannels(i.guildId);
+      if (channels.length >= 25) {
+        return await i.reply({ content: 'SneakAI already has the maximum of 25 channels.', flags: MessageFlags.Ephemeral });
+      }
       const picker = new ChannelSelectMenuBuilder()
-        .setCustomId('legacy_sneakai_select_channel')
-        .setPlaceholder('Choose the SneakAI text channel')
+        .setCustomId('legacy_sneakai_add_select')
+        .setPlaceholder('Choose a text channel to add')
         .setChannelTypes(ChannelType.GuildText);
       return await i.update({
-        content: 'Choose the text channel where SneakAI should answer normal messages.',
+        content: 'Choose a text channel where SneakAI should answer normal messages.',
+        embeds: [],
+        components: [
+          new ActionRowBuilder().addComponents(picker),
+          new ActionRowBuilder().addComponents(new ButtonBuilder()
+            .setCustomId('legacy_sneakai_back')
+            .setLabel('Back to Setup')
+            .setStyle(ButtonStyle.Secondary))
+        ]
+      });
+    }
+
+    if (i.isButton() && i.customId === 'legacy_sneakai_remove_channel') {
+      const channels = sneakaiChannels(i.guildId);
+      if (!channels.length) {
+        return await i.reply({ content: 'There are no SneakAI channels to remove.', flags: MessageFlags.Ephemeral });
+      }
+      const options = channels.map(channelId => {
+        const channel = i.guild.channels.cache.get(channelId);
+        const label = channel?.name || `Unavailable ${channelId}`;
+        return {
+          label: label.slice(0, 100),
+          description: `Remove ${channel ? `#${channel.name}` : 'this unavailable channel'} from SneakAI`.slice(0, 100),
+          value: channelId
+        };
+      });
+      const picker = new StringSelectMenuBuilder()
+        .setCustomId('legacy_sneakai_remove_select')
+        .setPlaceholder('Choose a channel to remove')
+        .addOptions(options);
+      return await i.update({
+        content: 'Choose which text channel to remove from SneakAI.',
         embeds: [],
         components: [
           new ActionRowBuilder().addComponents(picker),
@@ -1996,14 +2041,38 @@ client.on('interactionCreate', async i => {
       });
     }
 
-    if (i.isChannelSelectMenu() && i.customId === 'legacy_sneakai_select_channel') {
+    if (i.isChannelSelectMenu() && i.customId === 'legacy_sneakai_add_select') {
       const channelId = i.values[0];
       if (!channelId) return await i.reply({ content: 'Choose a text channel first.', flags: MessageFlags.Ephemeral });
-      getGuildCommunity(i.guildId).sneakai.channelId = channelId;
+      const channels = sneakaiChannels(i.guildId);
+      if (channels.includes(channelId)) {
+        return await i.update({
+          content: `<#${channelId}> is already a SneakAI channel.`,
+          embeds: [sneakaiPanelEmbed(i.guildId)],
+          components: sneakaiPanelComponents()
+        });
+      }
+      if (channels.length >= 25) {
+        return await i.update({ content: 'SneakAI already has the maximum of 25 channels.', embeds: [sneakaiPanelEmbed(i.guildId)], components: sneakaiPanelComponents() });
+      }
+      channels.push(channelId);
       aiSetupWarnings.delete(`${i.guildId}:${channelId}`);
       saveCommunitySettings();
       return await i.update({
-        content: `SneakAI will answer normal messages in <#${channelId}> only.`,
+        content: `Added <#${channelId}> to SneakAI.`,
+        embeds: [sneakaiPanelEmbed(i.guildId)],
+        components: sneakaiPanelComponents()
+      });
+    }
+
+    if (i.isStringSelectMenu() && i.customId === 'legacy_sneakai_remove_select') {
+      const channelId = i.values[0];
+      const config = getGuildCommunity(i.guildId).sneakai;
+      config.channelIds = config.channelIds.filter(id => id !== channelId);
+      aiSetupWarnings.delete(`${i.guildId}:${channelId}`);
+      saveCommunitySettings();
+      return await i.update({
+        content: `Removed <#${channelId}> from SneakAI.`,
         embeds: [sneakaiPanelEmbed(i.guildId)],
         components: sneakaiPanelComponents()
       });
@@ -2529,10 +2598,10 @@ function triggerMatches(content, trigger, matchMode = 'contains') {
 client.on('messageCreate', async message => {
   if (message.author.bot || !message.guild) return;
 
-  const aiChannelId = getGuildCommunity(message.guild.id).sneakai.channelId;
-  if (aiChannelId && message.channelId === aiChannelId) {
+  const aiChannelIds = sneakaiChannels(message.guild.id);
+  if (aiChannelIds.includes(message.channelId)) {
     if (!nvidiaApiKey) {
-      const warningKey = `${message.guild.id}:${aiChannelId}`;
+      const warningKey = `${message.guild.id}:${message.channelId}`;
       if (!aiSetupWarnings.has(warningKey)) {
         aiSetupWarnings.add(warningKey);
         await message.reply({
