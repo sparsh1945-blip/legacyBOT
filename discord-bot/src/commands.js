@@ -31,6 +31,10 @@ const memberMessageCommand = (name, description) =>
     .setName(name)
     .setDescription(description)
     .addSubcommand(s =>
+      s.setName('panel')
+        .setDescription('Open the interactive setup dashboard')
+    )
+    .addSubcommand(s =>
       s.setName('set')
         .setDescription('Create or edit the member message')
         .addChannelOption(o =>
@@ -216,6 +220,10 @@ export const commands = [
   new SlashCommandBuilder()
     .setName('minestatus')
     .setDescription('Show server heartbeat status'),
+
+  new SlashCommandBuilder()
+    .setName('setup')
+    .setDescription('Open the interactive welcome setup dashboard (staff only)'),
 
   memberMessageCommand('welcome', 'Configure the server welcome embed'),
 

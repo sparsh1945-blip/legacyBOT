@@ -68,9 +68,12 @@ Discord:
 - `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
+- `/setup` — open the staff-only welcome setup dashboard shown as an interactive panel.
+- `/welcome panel` and `/leave panel` — open the matching welcome or leave dashboard.
 - `/welcome set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member join embed (staff only).
 - `/leave set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member leave embed (staff only).
 - `/welcome test|show|disable` and `/leave test|show|disable` — preview, inspect, or turn off each embed (staff only).
+- The dashboards include channel selection, enable/disable, preview, message and image editing, placeholders, reset, up to five link buttons, accent color, and member ping/message auto-delete settings.
 - `/invites check user:<optional member>` — show total joins, active invited members, and departures; available to everyone.
 - `/invites leaderboard` — show the top inviters by active members; available to everyone.
 - `/invites logchannel channel:<channel>` — configure join attribution logs (staff only).

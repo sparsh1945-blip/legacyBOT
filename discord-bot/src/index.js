@@ -13,6 +13,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -613,18 +614,40 @@ function buildMemberEmbed(member, settings, inviterId) {
   return embed;
 }
 
-async function sendMemberEmbed(member, kind, inviterId = null) {
+async function sendMemberEmbed(member, kind, inviterId = null, { force = false } = {}) {
   const settings = getGuildCommunity(member.guild.id)[kind];
-  if (!settings?.channelId || !settings.message) return false;
+  if (!settings?.channelId || !settings.message || (!force && settings.enabled === false)) return false;
 
   const channel = member.guild.channels.cache.get(settings.channelId) ||
     await member.guild.channels.fetch(settings.channelId).catch(() => null);
   if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return false;
 
-  await channel.send({
+  const links = Array.isArray(settings.links)
+    ? settings.links.filter(link => typeof link?.label === 'string' && typeof link?.url === 'string')
+    : [];
+  const payload = {
     embeds: [buildMemberEmbed(member, settings, inviterId)],
-    allowedMentions: { users: [member.id], parse: [] }
-  });
+    allowedMentions: { users: [member.id], parse: [] },
+    ...(settings.pingMember ? { content: `<@${member.id}>` } : {}),
+    ...(links.length
+      ? {
+          components: [new ActionRowBuilder().addComponents(
+            links.slice(0, 5).map(link =>
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel(link.label.slice(0, 80))
+                .setURL(link.url)
+            )
+          )]
+        }
+      : {})
+  };
+  const sent = await channel.send(payload);
+  const deleteAfterSeconds = Number(settings.deleteAfterSeconds || 0);
+  if (deleteAfterSeconds > 0) {
+    const timer = setTimeout(() => sent.delete().catch(() => {}), deleteAfterSeconds * 1000);
+    timer.unref?.();
+  }
   return true;
 }
 
@@ -736,12 +759,14 @@ async function configureMemberEmbed(interaction, kind) {
 
   const settings = getGuildCommunity(interaction.guildId);
   settings[kind] = {
+    ...(settings[kind] || {}),
     channelId: channel.id,
     title,
     message,
     imageUrl,
     color,
-    emoji
+    emoji,
+    enabled: true
   };
   saveCommunitySettings();
 
@@ -749,6 +774,150 @@ async function configureMemberEmbed(interaction, kind) {
     content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} embed saved for <#${channel.id}>. Use placeholders such as \`{username}\`, \`{mention}\`, \`{member_count}\`, \`{inviter}\`, \`{invites}\`, and \`{emoji}\`.`,
     flags: MessageFlags.Ephemeral
   });
+}
+
+function memberPanelCustomId(kind, action) {
+  return `legacy_member_${kind}_${action}`;
+}
+
+function memberPanelEmbed(guildId, kind) {
+  const settings = getGuildCommunity(guildId)[kind] || {};
+  const enabled = settings.enabled !== false;
+  const configured = Boolean(settings.channelId && settings.message);
+  const links = Array.isArray(settings.links) ? settings.links : [];
+  const title = kind === 'welcome' ? 'Welcome Setup' : 'Leave Setup';
+  const message = settings.message
+    ? `${settings.message.replace(/\s+/gu, ' ').slice(0, 220)}${settings.message.length > 220 ? '…' : ''}`
+    : 'No message set yet';
+
+  return new EmbedBuilder()
+    .setColor(parseInt(normalizeHexColor(settings.color) || '22C7D6', 16))
+    .setTitle(`✨ ${title}`)
+    .setDescription('Use the controls below to configure and preview this message. Changes save immediately.')
+    .addFields(
+      {
+        name: 'Basic Setup',
+        value: `**Channel:** ${settings.channelId ? `<#${settings.channelId}>` : 'Not set'}\n**Status:** ${configured ? (enabled ? 'Enabled' : 'Disabled') : 'Needs a channel and message'}`
+      },
+      {
+        name: 'Customization',
+        value: `**Title:** ${(settings.title || '(none)').slice(0, 160)}\n**Message:** ${message}\n**Background:** ${settings.imageUrl ? 'Set' : 'Not set'}`
+      },
+      {
+        name: 'Extra',
+        value: `**Links:** ${links.length}\n**Accent color:** #${normalizeHexColor(settings.color) || '22C7D6'}`
+      },
+      {
+        name: 'Advanced Settings',
+        value: `**Ping member:** ${settings.pingMember ? 'On' : 'Off'}\n**Delete after:** ${Number(settings.deleteAfterSeconds || 0) || 'Never'} seconds`
+      }
+    )
+    .setFooter({ text: 'Staff setup • Changes are saved immediately' });
+}
+
+function memberPanelComponents(kind, settings = {}) {
+  const button = (action, label, style = ButtonStyle.Secondary, emoji) => {
+    const item = new ButtonBuilder()
+      .setCustomId(memberPanelCustomId(kind, action))
+      .setLabel(label)
+      .setStyle(style);
+    if (emoji) item.setEmoji(emoji);
+    return item;
+  };
+
+  const isEnabled = Boolean(settings.channelId && settings.message && settings.enabled !== false);
+
+  return [
+    new ActionRowBuilder().addComponents(
+      button('set_channel', 'Set Channel', ButtonStyle.Success, '📢'),
+      button('toggle', isEnabled ? 'Disable' : 'Enable', isEnabled ? ButtonStyle.Danger : ButtonStyle.Success, isEnabled ? '🔄' : '✅'),
+      button('test', `Test ${kind === 'welcome' ? 'Welcome' : 'Leave'}`, ButtonStyle.Secondary, '🧪'),
+      button('view_config', 'View Config', ButtonStyle.Secondary, '👁️')
+    ),
+    new ActionRowBuilder().addComponents(
+      button('edit_message', 'Edit Message', ButtonStyle.Primary, '✏️'),
+      button('background', 'Background', ButtonStyle.Primary, '🖼️'),
+      button('placeholders', 'View Placeholders', ButtonStyle.Secondary, '📋'),
+      button('reset', 'Reset All', ButtonStyle.Danger, '🔄')
+    ),
+    new ActionRowBuilder().addComponents(
+      button('add_link', 'Add Link', ButtonStyle.Success, '➕'),
+      button('remove_link', 'Remove Link', ButtonStyle.Danger, '➖'),
+      button('view_links', 'View Links', ButtonStyle.Secondary, '🔗'),
+      button('accent_color', 'Accent Color', ButtonStyle.Primary, '🎨')
+    ),
+    new ActionRowBuilder().addComponents(
+      button('ping_delete', 'Ping & Delete', ButtonStyle.Primary, '📌')
+    )
+  ];
+}
+
+function memberPanelModal(kind, action, settings = {}) {
+  const modal = new ModalBuilder()
+    .setCustomId(memberPanelCustomId(kind, `modal_${action}`));
+  const input = (customId, label, style, value, maxLength, required = true, placeholder) => {
+    const field = new TextInputBuilder()
+      .setCustomId(customId)
+      .setLabel(label)
+      .setStyle(style)
+      .setMaxLength(maxLength)
+      .setRequired(required);
+    if (value) field.setValue(value.slice(0, maxLength));
+    if (placeholder) field.setPlaceholder(placeholder);
+    return field;
+  };
+
+  if (action === 'edit_message') {
+    modal.setTitle(`Edit ${kind} message`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(input('title', 'Embed title (optional)', TextInputStyle.Short, settings.title || '', 256, false)),
+      new ActionRowBuilder().addComponents(input('message', 'Embed message', TextInputStyle.Paragraph, settings.message || (kind === 'welcome' ? 'Welcome {mention} to {server}! {emoji}' : 'Goodbye {username}!'), 4000)),
+      new ActionRowBuilder().addComponents(input('emoji', 'Emoji placeholder (optional)', TextInputStyle.Short, settings.emoji || '', 100, false, 'Custom animated emoji markup works'))
+    );
+  } else if (action === 'background') {
+    modal.setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} background image`);
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      input('image_url', 'Direct image URL or Discord upload link', TextInputStyle.Short, settings.imageUrl || '', 2000, false, 'Leave blank to remove the image')
+    ));
+  } else if (action === 'add_link') {
+    modal.setTitle(`Add a ${kind} link button`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(input('label', 'Button label', TextInputStyle.Short, '', 80)),
+      new ActionRowBuilder().addComponents(input('url', 'Link URL (HTTP or HTTPS)', TextInputStyle.Short, '', 512))
+    );
+  } else if (action === 'accent_color') {
+    modal.setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} accent color`);
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      input('color', 'Six-digit HEX color', TextInputStyle.Short, `#${normalizeHexColor(settings.color) || '22C7D6'}`, 7, true, 'Example: #22C7D6')
+    ));
+  } else if (action === 'ping_delete') {
+    modal.setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} advanced settings`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(input('ping', 'Ping the joining/leaving member? yes/no', TextInputStyle.Short, settings.pingMember ? 'yes' : 'no', 3, true)),
+      new ActionRowBuilder().addComponents(input('delete_after', 'Delete message after seconds (0 = never)', TextInputStyle.Short, String(settings.deleteAfterSeconds || 0), 5, true))
+    );
+  }
+
+  return modal;
+}
+
+function memberPanelConfigEmbed(guildId, kind) {
+  const settings = getGuildCommunity(guildId)[kind] || {};
+  const message = settings.message || '(not set)';
+  const links = Array.isArray(settings.links) ? settings.links : [];
+  return new EmbedBuilder()
+    .setColor(parseInt(normalizeHexColor(settings.color) || '22C7D6', 16))
+    .setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} Configuration`)
+    .addFields(
+      { name: 'Channel', value: settings.channelId ? `<#${settings.channelId}>` : 'Not set' },
+      { name: 'Status', value: settings.enabled === false ? 'Disabled' : (settings.channelId && settings.message ? 'Enabled' : 'Not configured'), inline: true },
+      { name: 'Title', value: (settings.title || '(none)').slice(0, 1024) },
+      { name: 'Message', value: message.length > 1000 ? `${message.slice(0, 997)}...` : message },
+      { name: 'Image URL', value: (settings.imageUrl || '(none)').slice(0, 1024) },
+      { name: 'Links', value: String(links.length), inline: true },
+      { name: 'Ping member', value: settings.pingMember ? 'On' : 'Off', inline: true },
+      { name: 'Delete after', value: `${Number(settings.deleteAfterSeconds || 0) || 'Never'} seconds`, inline: true }
+    );
 }
 
 // Bot ready
@@ -1160,13 +1329,23 @@ client.on('interactionCreate', async i => {
       const kind = command;
       const action = i.options.getSubcommand();
 
+      if (action === 'panel') {
+        const settings = getGuildCommunity(i.guildId)[kind] || {};
+        return i.reply({
+          embeds: [memberPanelEmbed(i.guildId, kind)],
+          components: memberPanelComponents(kind, settings),
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
       if (action === 'set') return configureMemberEmbed(i, kind);
 
       const settings = getGuildCommunity(i.guildId);
       const current = settings[kind];
 
       if (action === 'disable') {
-        delete settings[kind];
+        settings[kind] ||= {};
+        settings[kind].enabled = false;
         saveCommunitySettings();
         return i.reply({
           content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} messages are disabled.`,
@@ -1175,7 +1354,7 @@ client.on('interactionCreate', async i => {
       }
 
       if (action === 'show') {
-        if (!current) {
+        if (!current?.message) {
           return i.reply({ content: `No ${kind} embed is configured. Use /${kind} set to create one.`, flags: MessageFlags.Ephemeral });
         }
 
@@ -1198,17 +1377,29 @@ client.on('interactionCreate', async i => {
       }
 
       if (action === 'test') {
-        if (!current) {
+        if (!current?.message) {
           return i.reply({ content: `Set up the ${kind} embed first with /${kind} set.`, flags: MessageFlags.Ephemeral });
         }
 
         const member = await i.guild.members.fetch(i.user.id);
-        const sent = await sendMemberEmbed(member, kind);
+        const sent = await sendMemberEmbed(member, kind, null, { force: true });
         return i.reply({
           content: sent ? `Preview sent to <#${current.channelId}>.` : 'I could not send the preview. Check that the configured channel still exists and that I can send embeds there.',
           flags: MessageFlags.Ephemeral
         });
       }
+    }
+
+    if (command === 'setup') {
+      if (!isAdmin(i)) return deny(i);
+      if (!i.guildId) return deny(i, 'Use this command inside a server.');
+
+      const settings = getGuildCommunity(i.guildId).welcome || {};
+      return i.reply({
+        embeds: [memberPanelEmbed(i.guildId, 'welcome')],
+        components: memberPanelComponents('welcome', settings),
+        flags: MessageFlags.Ephemeral
+      });
     }
 
     if (command === 'invites') {
@@ -1265,7 +1456,7 @@ client.on('interactionCreate', async i => {
           { name: 'Account linking', value: '`/minelink` · `/mineunlink` · `/mineaccount`' },
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
-          { name: 'Community', value: '`/invites check` · `/invites leaderboard` · `/welcome set` · `/leave set` (welcome/leave setup is staff-only)' },
+          { name: 'Community', value: '`/invites check` · `/invites leaderboard` · `/setup` · `/welcome panel` · `/leave panel` (welcome/leave setup is staff-only)' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
           { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponder embed add/edit/list/remove` for embedded replies · use each set’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
         );
@@ -1732,6 +1923,261 @@ client.on('interactionCreate', async i => {
       return i.followUp(payload).catch(() => {});
     }
 
+    return i.reply(payload).catch(() => {});
+  }
+});
+
+client.on('interactionCreate', async i => {
+  if (!i.isButton() && !i.isChannelSelectMenu() && !i.isStringSelectMenu() && !i.isModalSubmit()) return;
+  if (!i.customId.startsWith('legacy_member_')) return;
+
+  if (!i.guildId) {
+    return i.reply({ content: 'Use this inside a server.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
+
+  if (!isAdmin(i)) {
+    return i.reply({ content: 'Only staff can manage welcome and leave messages.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
+
+  try {
+    const match = i.customId.match(/^legacy_member_(welcome|leave)_(.+)$/);
+    if (!match) return;
+    const [, kind, action] = match;
+    const guildSettings = getGuildCommunity(i.guildId);
+    const settings = guildSettings[kind] ||= {};
+    const updatePanel = () => i.update({
+      content: null,
+      embeds: [memberPanelEmbed(i.guildId, kind)],
+      components: memberPanelComponents(kind, settings)
+    });
+
+    if (i.isButton()) {
+      if (action === 'set_channel') {
+        const picker = new ChannelSelectMenuBuilder()
+          .setCustomId(memberPanelCustomId(kind, 'select_channel'))
+          .setPlaceholder('Choose a text channel')
+          .setChannelTypes(ChannelType.GuildText);
+        return i.update({
+          content: 'Choose where the message should be sent.',
+          embeds: [],
+          components: [
+            new ActionRowBuilder().addComponents(picker),
+            new ActionRowBuilder().addComponents(new ButtonBuilder()
+              .setCustomId(memberPanelCustomId(kind, 'back_panel'))
+              .setLabel('Back to Setup')
+              .setStyle(ButtonStyle.Secondary))
+          ]
+        });
+      }
+
+      if (action === 'back_panel' || action === 'cancel_reset') return updatePanel();
+
+      if (action === 'toggle') {
+        if (!settings.channelId || !settings.message) {
+          return i.reply({ content: `Set a channel and message before enabling ${kind} messages.`, flags: MessageFlags.Ephemeral });
+        }
+        settings.enabled = settings.enabled === false;
+        saveCommunitySettings();
+        return updatePanel();
+      }
+
+      if (action === 'test') {
+        const member = await i.guild.members.fetch(i.user.id);
+        const sent = await sendMemberEmbed(member, kind, null, { force: true });
+        return i.reply({
+          content: sent ? `Preview sent to <#${settings.channelId}>.` : `Set a channel and message in the ${kind} panel first.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'view_config') {
+        return i.reply({ embeds: [memberPanelConfigEmbed(i.guildId, kind)], flags: MessageFlags.Ephemeral });
+      }
+
+      if (action === 'placeholders') {
+        return i.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0x22c7d6)
+            .setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} Placeholders`)
+            .setDescription('Use any of these in the title or message. Discord custom emoji markup, including animated emojis, can also be typed directly.')
+            .addFields(
+              { name: 'Member', value: '`{username}` · `{displayname}` · `{mention}` · `{avatar}`' },
+              { name: 'Server', value: '`{server}` · `{guild}` · `{member_count}`' },
+              { name: 'Invites', value: '`{inviter}` · `{invites}` · `{active_invites}`' },
+              { name: 'Custom emoji', value: 'Set the Emoji option in Edit Message, then use `{emoji}`.' }
+            )],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'edit_message' || action === 'background' || action === 'add_link' || action === 'accent_color' || action === 'ping_delete') {
+        return i.showModal(memberPanelModal(kind, action, settings));
+      }
+
+      if (action === 'view_links') {
+        const memberLinks = Array.isArray(settings.links) ? settings.links : [];
+        return i.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0x22c7d6)
+            .setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} Links`)
+            .setDescription(memberLinks.length
+              ? memberLinks.map((link, index) => `**${index + 1}. [${link.label}](${link.url})**`).join('\n')
+              : 'No link buttons have been added yet.')],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'remove_link') {
+        const memberLinks = Array.isArray(settings.links) ? settings.links : [];
+        if (!memberLinks.length) {
+          return i.reply({ content: 'There are no link buttons to remove.', flags: MessageFlags.Ephemeral });
+        }
+        const select = new StringSelectMenuBuilder()
+          .setCustomId(memberPanelCustomId(kind, 'select_remove_link'))
+          .setPlaceholder('Choose a link to remove')
+          .addOptions(memberLinks.slice(0, 25).map((link, index) => ({
+            label: (link.label || `Link ${index + 1}`).slice(0, 100),
+            description: (link.url || '').slice(0, 100) || 'Link button',
+            value: String(index)
+          })));
+        return i.update({
+          content: 'Choose the link button to remove.',
+          embeds: [],
+          components: [
+            new ActionRowBuilder().addComponents(select),
+            new ActionRowBuilder().addComponents(new ButtonBuilder()
+              .setCustomId(memberPanelCustomId(kind, 'back_panel'))
+              .setLabel('Back to Setup')
+              .setStyle(ButtonStyle.Secondary))
+          ]
+        });
+      }
+
+      if (action === 'reset') {
+        return i.update({
+          content: `Reset all ${kind} settings, including the channel, message, image, and links?`,
+          embeds: [],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(memberPanelCustomId(kind, 'confirm_reset'))
+              .setLabel('Confirm Reset')
+              .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+              .setCustomId(memberPanelCustomId(kind, 'cancel_reset'))
+              .setLabel('Cancel')
+              .setStyle(ButtonStyle.Secondary)
+          )]
+        });
+      }
+
+      if (action === 'confirm_reset') {
+        delete guildSettings[kind];
+        saveCommunitySettings();
+        return i.update({
+          content: 'All settings have been reset.',
+          embeds: [memberPanelEmbed(i.guildId, kind)],
+          components: memberPanelComponents(kind, {})
+        });
+      }
+    }
+
+    if (i.isChannelSelectMenu() && action === 'select_channel') {
+      settings.channelId = i.values[0];
+      settings.enabled ??= true;
+      saveCommunitySettings();
+      return i.update({
+        content: null,
+        embeds: [memberPanelEmbed(i.guildId, kind)],
+        components: memberPanelComponents(kind, settings)
+      });
+    }
+
+    if (i.isStringSelectMenu() && action === 'select_remove_link') {
+      const index = Number(i.values[0]);
+      const memberLinks = Array.isArray(settings.links) ? settings.links : [];
+      if (!Number.isInteger(index) || index < 0 || index >= memberLinks.length) {
+        return i.reply({ content: 'That link no longer exists.', flags: MessageFlags.Ephemeral });
+      }
+      const [removed] = memberLinks.splice(index, 1);
+      settings.links = memberLinks;
+      saveCommunitySettings();
+      return i.update({
+        content: `Removed the **${removed.label}** link button.`,
+        embeds: [memberPanelEmbed(i.guildId, kind)],
+        components: memberPanelComponents(kind, settings)
+      });
+    }
+
+    if (i.isModalSubmit()) {
+      if (action === 'modal_edit_message') {
+        const message = i.fields.getTextInputValue('message').trim();
+        if (!message) return i.reply({ content: 'The embed message cannot be empty.', flags: MessageFlags.Ephemeral });
+        settings.title = i.fields.getTextInputValue('title').trim();
+        settings.message = message;
+        settings.emoji = i.fields.getTextInputValue('emoji').trim();
+      } else if (action === 'modal_background') {
+        const imageUrl = i.fields.getTextInputValue('image_url').trim();
+        if (imageUrl) {
+          let parsedUrl;
+          try {
+            parsedUrl = new URL(imageUrl);
+          } catch {
+            return i.reply({ content: 'Enter a valid image URL.', flags: MessageFlags.Ephemeral });
+          }
+          if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+            return i.reply({ content: 'Image URLs must start with http:// or https://.', flags: MessageFlags.Ephemeral });
+          }
+        }
+        settings.imageUrl = imageUrl;
+      } else if (action === 'modal_add_link') {
+        const label = i.fields.getTextInputValue('label').trim();
+        const url = i.fields.getTextInputValue('url').trim();
+        let parsedUrl;
+        try {
+          parsedUrl = new URL(url);
+        } catch {
+          return i.reply({ content: 'Enter a valid HTTP or HTTPS link URL.', flags: MessageFlags.Ephemeral });
+        }
+        if (!label || !['http:', 'https:'].includes(parsedUrl.protocol)) {
+          return i.reply({ content: 'Add a button label and an HTTP or HTTPS link.', flags: MessageFlags.Ephemeral });
+        }
+        settings.links ||= [];
+        if (settings.links.length >= 5) {
+          return i.reply({ content: 'This message already has five link buttons, the Discord limit.', flags: MessageFlags.Ephemeral });
+        }
+        settings.links.push({ label, url });
+      } else if (action === 'modal_accent_color') {
+        const color = normalizeHexColor(i.fields.getTextInputValue('color'));
+        if (!color) return i.reply({ content: 'Use a six-digit HEX color such as #22C7D6.', flags: MessageFlags.Ephemeral });
+        settings.color = color;
+      } else if (action === 'modal_ping_delete') {
+        const ping = i.fields.getTextInputValue('ping').trim().toLowerCase();
+        const deleteAfter = Number(i.fields.getTextInputValue('delete_after').trim());
+        if (!['yes', 'no'].includes(ping)) {
+          return i.reply({ content: 'Enter yes or no for member pings.', flags: MessageFlags.Ephemeral });
+        }
+        if (!Number.isInteger(deleteAfter) || deleteAfter < 0 || deleteAfter > 86400) {
+          return i.reply({ content: 'Delete delay must be a whole number from 0 to 86400 seconds.', flags: MessageFlags.Ephemeral });
+        }
+        settings.pingMember = ping === 'yes';
+        settings.deleteAfterSeconds = deleteAfter;
+      } else {
+        return;
+      }
+
+      saveCommunitySettings();
+      const savedPanel = {
+        content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} settings saved.`,
+        embeds: [memberPanelEmbed(i.guildId, kind)],
+        components: memberPanelComponents(kind, settings)
+      };
+      if (i.isFromMessage()) return i.update(savedPanel);
+      return i.reply({ ...savedPanel, flags: MessageFlags.Ephemeral });
+    }
+  } catch (error) {
+    console.error('Member message panel interaction failed:', error);
+    const payload = { content: 'Could not process that setup action. Reopen the panel and try again.', flags: MessageFlags.Ephemeral };
+    if (i.deferred || i.replied) return i.followUp(payload).catch(() => {});
     return i.reply(payload).catch(() => {});
   }
 });
