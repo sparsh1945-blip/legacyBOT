@@ -106,6 +106,16 @@ export const commands = [
     .setDescription('Show LegacyMC bot commands and help'),
 
   new SlashCommandBuilder()
+    .setName('ask')
+    .setDescription('Ask the NVIDIA Nemotron AI assistant')
+    .addStringOption(o =>
+      o.setName('question')
+        .setDescription('What would you like to ask?')
+        .setRequired(true)
+        .setMaxLength(1500)
+    ),
+
+  new SlashCommandBuilder()
     .setName('announce')
     .setDescription('Send a Minecraft server announcement (staff only)')
     .addStringOption(o =>

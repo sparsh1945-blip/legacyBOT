@@ -47,6 +47,7 @@ Register slash commands:
 npm run deploy
 ```
 Set `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`, and `API_TOKEN`.
+Set `NVIDIA_API_KEY` to your NVIDIA API key to enable the public `/ask question:<text>` command. It uses Nemotron 3 Ultra by default; `NVIDIA_MODEL` can override the model ID. Keep API keys private and restart the bot after changing `.env`.
 Use a strong random API token (32+ random bytes). Do not commit `.env`.
 
 ## 3. Commands
@@ -55,6 +56,7 @@ Minecraft:
 - `/sneaksmp reload` — reload config (console or `sneaksmp.admin`).
 
 Discord:
+- `/ask question:<text>` — ask the NVIDIA Nemotron 3 Ultra AI assistant (requires `NVIDIA_API_KEY`; one request per user every 15 seconds).
 - `/givecoins player:<Minecraft username> amount:<positive number> reason:<text>`
 - `/takecoins player:<Minecraft username> amount:<positive number> reason:<text>`
 - `/setup` — open the staff-only welcome setup dashboard shown as an interactive panel.
