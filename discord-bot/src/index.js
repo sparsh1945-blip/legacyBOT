@@ -2,11 +2,13 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 import {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
+  AttachmentBuilder,
   ChannelType,
   PermissionFlagsBits,
   MessageFlags,
@@ -587,6 +589,10 @@ function renderMemberTemplate(template, member, settings, inviterId) {
     server: member.guild.name,
     guild: member.guild.name,
     member_count: String(member.guild.memberCount),
+    member_number: String(member.guild.memberCount),
+    join_date: (member.joinedAt || new Date()).toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: '2-digit'
+    }),
     inviter,
     invites: String(counts.joins),
     active_invites: String(counts.active),
@@ -600,18 +606,107 @@ function renderMemberTemplate(template, member, settings, inviterId) {
   );
 }
 
-function buildMemberEmbed(member, settings, inviterId) {
-  const title = renderMemberTemplate(settings.title, member, settings, inviterId).trim();
-  const description = renderMemberTemplate(settings.message, member, settings, inviterId).trim();
-  const color = normalizeHexColor(settings.color) || '22C7D6';
-  const embed = new EmbedBuilder()
-    .setColor(parseInt(color, 16))
-    .setDescription(description.slice(0, 4000))
-    .setThumbnail(member.displayAvatarURL({ size: 512 }));
+function drawCoverImage(context, image, width, height) {
+  const scale = Math.max(width / image.width, height / image.height);
+  const sourceWidth = width / scale;
+  const sourceHeight = height / scale;
+  const sourceX = (image.width - sourceWidth) / 2;
+  const sourceY = (image.height - sourceHeight) / 2;
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
+}
 
-  if (title) embed.setTitle(title.slice(0, 256));
-  if (settings.imageUrl) embed.setImage(settings.imageUrl);
-  return embed;
+function fitCanvasText(context, text, maxWidth, startSize, minSize = 24) {
+  let size = startSize;
+  while (size > minSize) {
+    context.font = `700 ${size}px Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size -= 2;
+  }
+  return size;
+}
+
+async function buildMemberCard(member, settings, inviterId, kind) {
+  const width = 1200;
+  const height = 650;
+  const canvas = createCanvas(width, height);
+  const context = canvas.getContext('2d');
+  const radius = 68;
+
+  context.beginPath();
+  context.roundRect(0, 0, width, height, radius);
+  context.clip();
+  const fallback = context.createLinearGradient(0, 0, width, height);
+  fallback.addColorStop(0, '#222b3d');
+  fallback.addColorStop(1, '#101116');
+  context.fillStyle = fallback;
+  context.fillRect(0, 0, width, height);
+
+  if (settings.imageUrl) {
+    try {
+      const background = await loadImage(settings.imageUrl);
+      drawCoverImage(context, background, width, height);
+    } catch (error) {
+      console.warn('Could not load member card background:', error.message);
+    }
+  }
+
+  const shade = context.createLinearGradient(0, 0, width, 0);
+  shade.addColorStop(0, 'rgba(0, 0, 0, 0.56)');
+  shade.addColorStop(0.46, 'rgba(0, 0, 0, 0.48)');
+  shade.addColorStop(1, 'rgba(0, 0, 0, 0.63)');
+  context.fillStyle = shade;
+  context.fillRect(0, 0, width, height);
+
+  context.textAlign = 'left';
+  context.textBaseline = 'middle';
+  const defaultHeading = kind === 'welcome' ? 'WELCOME' : 'GOODBYE';
+  const heading = renderMemberTemplate(settings.title || defaultHeading, member, settings, inviterId)
+    .replace(/<a?:[a-zA-Z0-9_]+:\d+>/g, '').trim() || defaultHeading;
+  const headingSize = fitCanvasText(context, heading, 610, 43, 25);
+  context.font = `500 ${headingSize}px Arial, sans-serif`;
+  context.fillStyle = '#ffffff';
+  context.fillText(heading, 445, 226, 610);
+  context.fillStyle = '#ffffff';
+  context.fillRect(445, 261, Math.min(context.measureText(heading).width, 330), 4);
+
+  const displayName = member.displayName || member.user.username;
+  const nameSize = fitCanvasText(context, displayName, 690, 76, 32);
+  context.font = `700 ${nameSize}px Arial, sans-serif`;
+  context.fillStyle = '#ffffff';
+  context.fillText(displayName, 445, 350, 690);
+
+  const subline = `${member.guild.name}  •  Member #${member.guild.memberCount}`;
+  context.font = '400 30px Arial, sans-serif';
+  context.fillStyle = '#f0f0f0';
+  context.fillText(subline, 445, 426, 690);
+
+  const avatarSize = 288;
+  const avatarX = 112;
+  const avatarY = 228;
+  context.save();
+  context.beginPath();
+  context.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+  context.clip();
+  try {
+    const avatar = await loadImage(member.displayAvatarURL({ extension: 'png', size: 512 }));
+    context.drawImage(avatar, avatarX, avatarY, avatarSize, avatarSize);
+  } catch (error) {
+    console.warn('Could not load member card avatar:', error.message);
+    context.fillStyle = '#374151';
+    context.fill();
+    context.fillStyle = '#ffffff';
+    context.font = '700 112px Arial, sans-serif';
+    context.textAlign = 'center';
+    context.fillText(displayName.slice(0, 1).toUpperCase(), avatarX + avatarSize / 2, avatarY + avatarSize / 2);
+  }
+  context.restore();
+
+  context.beginPath();
+  context.roundRect(5, 5, width - 10, height - 10, radius - 5);
+  context.lineWidth = 9;
+  context.strokeStyle = '#f4f4f5';
+  context.stroke();
+  return canvas.toBuffer('image/png');
 }
 
 async function sendMemberEmbed(member, kind, inviterId = null, { force = false } = {}) {
@@ -625,10 +720,13 @@ async function sendMemberEmbed(member, kind, inviterId = null, { force = false }
   const links = Array.isArray(settings.links)
     ? settings.links.filter(link => typeof link?.label === 'string' && typeof link?.url === 'string')
     : [];
+  const content = renderMemberTemplate(settings.message, member, settings, inviterId).slice(0, 2000);
   const payload = {
-    embeds: [buildMemberEmbed(member, settings, inviterId)],
+    embeds: [],
     allowedMentions: { users: [member.id], parse: [] },
-    ...(settings.pingMember ? { content: `<@${member.id}>` } : {}),
+    ...(content || settings.pingMember ? {
+      content: [settings.pingMember ? `<@${member.id}>` : '', content || ''].filter(Boolean).join('\n').slice(0, 2000)
+    } : {}),
     ...(links.length
       ? {
           components: [new ActionRowBuilder().addComponents(
@@ -642,6 +740,12 @@ async function sendMemberEmbed(member, kind, inviterId = null, { force = false }
         }
       : {})
   };
+  const card = await buildMemberCard(member, settings, inviterId, kind);
+  const cardName = `${kind}-card.png`;
+  payload.embeds = [new EmbedBuilder()
+    .setColor(parseInt(normalizeHexColor(settings.color) || '22C7D6', 16))
+    .setImage(`attachment://${cardName}`)];
+  payload.files = [new AttachmentBuilder(card, { name: cardName })];
   const sent = await channel.send(payload);
   const deleteAfterSeconds = Number(settings.deleteAfterSeconds || 0);
   if (deleteAfterSeconds > 0) {
@@ -771,7 +875,7 @@ async function configureMemberEmbed(interaction, kind) {
   saveCommunitySettings();
 
   return interaction.reply({
-    content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} embed saved for <#${channel.id}>. Use placeholders such as \`{username}\`, \`{mention}\`, \`{member_count}\`, \`{inviter}\`, \`{invites}\`, and \`{emoji}\`.`,
+    content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} card saved for <#${channel.id}>. Use placeholders such as \`{username}\`, \`{mention}\`, \`{member_count}\`, \`{join_date}\`, \`{inviter}\`, \`{invites}\`, and \`{emoji}\`.`,
     flags: MessageFlags.Ephemeral
   });
 }
@@ -870,8 +974,8 @@ function memberPanelModal(kind, action, settings = {}) {
   if (action === 'edit_message') {
     modal.setTitle(`Edit ${kind} message`);
     modal.addComponents(
-      new ActionRowBuilder().addComponents(input('title', 'Embed title (optional)', TextInputStyle.Short, settings.title || '', 256, false)),
-      new ActionRowBuilder().addComponents(input('message', 'Embed message', TextInputStyle.Paragraph, settings.message || (kind === 'welcome' ? 'Welcome {mention} to {server}! {emoji}' : 'Goodbye {username}!'), 4000)),
+      new ActionRowBuilder().addComponents(input('title', 'Card heading (optional)', TextInputStyle.Short, settings.title || '', 256, false)),
+      new ActionRowBuilder().addComponents(input('message', 'Text above the card', TextInputStyle.Paragraph, settings.message || (kind === 'welcome' ? 'Welcome {mention} to {server}! {emoji}' : 'Goodbye {username}!'), 4000)),
       new ActionRowBuilder().addComponents(input('emoji', 'Emoji placeholder (optional)', TextInputStyle.Short, settings.emoji || '', 100, false, 'Custom animated emoji markup works'))
     );
   } else if (action === 'background') {
@@ -1999,10 +2103,10 @@ client.on('interactionCreate', async i => {
           embeds: [new EmbedBuilder()
             .setColor(0x22c7d6)
             .setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} Placeholders`)
-            .setDescription('Use any of these in the title or message. Discord custom emoji markup, including animated emojis, can also be typed directly.')
+            .setDescription('Use these in the card heading or text above the card. Discord custom emoji markup, including animated emojis, can be typed in the text.')
             .addFields(
               { name: 'Member', value: '`{username}` · `{displayname}` · `{mention}` · `{avatar}`' },
-              { name: 'Server', value: '`{server}` · `{guild}` · `{member_count}`' },
+              { name: 'Server', value: '`{server}` · `{guild}` · `{member_count}` · `{member_number}` · `{join_date}`' },
               { name: 'Invites', value: '`{inviter}` · `{invites}` · `{active_invites}`' },
               { name: 'Custom emoji', value: 'Set the Emoji option in Edit Message, then use `{emoji}`.' }
             )],
@@ -2111,7 +2215,7 @@ client.on('interactionCreate', async i => {
     if (i.isModalSubmit()) {
       if (action === 'modal_edit_message') {
         const message = i.fields.getTextInputValue('message').trim();
-        if (!message) return i.reply({ content: 'The embed message cannot be empty.', flags: MessageFlags.Ephemeral });
+        if (!message) return i.reply({ content: 'The text above the card cannot be empty.', flags: MessageFlags.Ephemeral });
         settings.title = i.fields.getTextInputValue('title').trim();
         settings.message = message;
         settings.emoji = i.fields.getTextInputValue('emoji').trim();
