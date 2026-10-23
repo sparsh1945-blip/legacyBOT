@@ -47,7 +47,7 @@ Register slash commands:
 npm run deploy
 ```
 Set `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`, and `API_TOKEN`.
-Set `NVIDIA_API_KEY` to your NVIDIA API key to enable SneakAI. Staff use `/setupsneakai` to add or remove dedicated AI channels; members can type normally in those channels and get replies only there. `/ask question:<text>` is also limited to a configured channel. Nemotron 3 Ultra is the default model; `NVIDIA_MODEL` can override the model ID. Keep API keys private and restart the bot after changing `.env`.
+Set `NVIDIA_API_KEY` to your NVIDIA API key to enable SneakAI. Staff use `/setupsneakai` to add or remove dedicated AI channels; members can type normally in those channels and get replies only there. Mention the bot with a question to start an AI session in any channel; mention it with `stop` to clear that session's AI context and messages. The bot needs **Manage Messages** to delete member messages during cleanup. `/ask question:<text>` is also limited to a configured channel. Nemotron 3 Ultra is the default model; `NVIDIA_MODEL` can override the model ID. Keep API keys private and restart the bot after changing `.env`.
 Use a strong random API token (32+ random bytes). Do not commit `.env`.
 
 ## 3. Commands
@@ -58,6 +58,7 @@ Minecraft:
 Discord:
 - `/setupsneakai` — open the staff-only SneakAI panel with **Add Channel**, **Remove Channel**, and **Requirements** buttons.
 - In a configured SneakAI channel, members can send a normal message to get an AI response (requires `NVIDIA_API_KEY`; one request per user every 15 seconds).
+- Mention the bot with a question to start a session in that channel; mention it with `stop` to clear the session context and session messages.
 - `/ask question:<text>` — ask the AI from a configured SneakAI channel.
 - `/givecoins player:<Minecraft username> amount:<positive number> reason:<text>`
 - `/takecoins player:<Minecraft username> amount:<positive number> reason:<text>`
