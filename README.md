@@ -55,19 +55,8 @@ Minecraft:
 - `/sneaksmp reload` — reload config (console or `sneaksmp.admin`).
 
 Discord:
-- `/minelink code:<code>`
-- `/mineunlink`
-- `/mineaccount`
-- `/mineleaderboard type:<kills|deaths|money|playtime|coins>`
-- `/minestats player:<Minecraft username>`
-- `/minebalance`
 - `/givecoins player:<Minecraft username> amount:<positive number> reason:<text>`
 - `/takecoins player:<Minecraft username> amount:<positive number> reason:<text>`
-- `/minekick player:<Minecraft username> reason:<text>`
-- `/mineban player:<Minecraft username> reason:<text>`
-- `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
-- `/mineunban player:<Minecraft username> reason:<text>`
-- `/minestatus`
 - `/setup` — open the staff-only welcome setup dashboard shown as an interactive panel.
 - `/welcome panel` and `/leave panel` — open the matching welcome or leave dashboard.
 - `/welcome set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member join card (staff only).
@@ -75,8 +64,8 @@ Discord:
 - `/welcome test|show|disable` and `/leave test|show|disable` — preview, inspect, or turn off each card (staff only).
 - Welcome and leave messages send editable text above a generated card with the member's avatar, account username, server name, and member number. The configured image URL is downloaded and cached in the bot's data folder so Discord upload links continue working after their URL expires. A dark gradient is used if no image is set.
 - The dashboards include channel selection, enable/disable, preview, message and image editing, placeholders, reset, up to five link buttons, accent color, and member ping/message auto-delete settings.
-- `/invites check user:<optional member>` — show total joins, active invited members, and departures; available to everyone.
-- `/invites leaderboard` — show the top inviters by active members; available to everyone.
+- `/invites check user:<optional member>` — show total joins, active members, fake joins, seven-day rejoins, and departures; available to everyone.
+- `/invites leaderboard` — show top inviters with active, fake, and rejoin counts; available to everyone.
 - `/invites logchannel channel:<channel>` — configure join attribution logs (staff only).
 - `/autoresponder add trigger:<word or phrase> reply:<text> matchmode:<optional>` — add a normal text auto-reply.
 - `/autoresponder embed add trigger:<word or phrase> reply:<text> matchmode:<optional> title:<optional> color:<optional HEX>` — add an embed containing only the optional custom title and reply text.
@@ -84,6 +73,8 @@ Discord:
 - `/autoresponder help` is available to everyone. All other autoresponder actions are restricted to staff. Add/edit/remove save immediately; the visual panel requires clicking **Save Changes**. `contains` is the default match mode; `exact`, `starts_with`, and `ends_with` are also available. Up to 25 triggers are supported per server. Run `npm run deploy` after updating the bot to register the command changes.
 
 Welcome and leave message templates accept `{username}`, `{displayname}`, `{mention}`, `{server}`, `{member_count}`, `{member_number}`, `{join_date}`, `{inviter}`, `{invites}`, `{active_invites}`, `{emoji}`, and `{avatar}`. Type Discord custom emoji markup (including animated emoji markup) directly in the text above the card, or set `emoji` and use `{emoji}`. `image_url` accepts a direct HTTP(S) image URL, including a Discord CDN upload link; the bot checks the link and saves a local copy. Invite counts begin after the tracker is running with invite usage metadata access; earlier joins cannot be recovered. If invite access is unavailable or a member uses an untracked link, the join is counted as unattributed.
+
+Invite tracking labels accounts created within the past seven days as fake joins. A member who returns within seven days is credited to the original inviter and counted as a rejoin rather than a fresh invite.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.

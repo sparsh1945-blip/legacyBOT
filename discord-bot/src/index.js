@@ -23,7 +23,7 @@ import {
 } from 'discord.js';
 
 import { app } from './api.js';
-import { players, links, coins } from './store.js';
+import { players } from './store.js';
 
 const token = process.env.DISCORD_TOKEN;
 const apiToken = process.env.API_TOKEN;
@@ -108,11 +108,6 @@ function isAdmin(i) {
     i.memberPermissions?.has(PermissionFlagsBits.Administrator);
 }
 
-function isModerator(i) {
-  return isAdmin(i) ||
-    parseIds('MOD_ROLE_IDS').some(id => i.member?.roles?.cache?.has(id));
-}
-
 async function deny(i, message = 'You do not have permission to use this command.') {
   return i.reply({ content: message, flags: MessageFlags.Ephemeral });
 }
@@ -142,10 +137,6 @@ function findPlayer(name) {
 
 function formatNumber(value) {
   return Number(value || 0).toLocaleString('en-US');
-}
-
-function linkedAccount(discordId) {
-  return links.get(discordId);
 }
 
 async function replyError(i, error) {
@@ -193,6 +184,9 @@ function saveCommunitySettings() {
   fs.renameSync(tempFile, communityFile);
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const departureCleanupAt = new Map();
+
 function getGuildCommunity(guildId) {
   if (!communitySettings[guildId] || typeof communitySettings[guildId] !== 'object') {
     communitySettings[guildId] = {};
@@ -204,7 +198,12 @@ function getGuildCommunity(guildId) {
   }
   settings.invites.totals ||= {};
   settings.invites.invitees ||= {};
+  if (!settings.invites.departures || typeof settings.invites.departures !== 'object') {
+    settings.invites.departures = {};
+  }
   settings.invites.unattributedJoins ||= 0;
+  settings.invites.fakeJoins ||= 0;
+  settings.invites.rejoins ||= 0;
   return settings;
 }
 
@@ -212,7 +211,21 @@ function getInviteCounts(guildId, inviterId) {
   const totals = getGuildCommunity(guildId).invites.totals[inviterId] || {};
   const joins = Number(totals.joins || 0);
   const leaves = Number(totals.leaves || 0);
-  return { joins, leaves, active: Math.max(0, joins - leaves) };
+  const rejoins = Number(totals.rejoins || 0);
+  const fakeJoins = Number(totals.fakeJoins || 0);
+  const total = joins + rejoins;
+  return { joins, leaves, rejoins, fakeJoins, total, active: Math.max(0, total - leaves) };
+}
+
+function pruneInviteDepartures(guildId, invites, now) {
+  const lastCleanup = departureCleanupAt.get(guildId) || 0;
+  if (now - lastCleanup < 24 * 60 * 60 * 1000) return;
+
+  for (const [userId, departure] of Object.entries(invites.departures)) {
+    const leftAt = Number(departure?.leftAt || 0);
+    if (!leftAt || now - leftAt > SEVEN_DAYS_MS) delete invites.departures[userId];
+  }
+  departureCleanupAt.set(guildId, now);
 }
 
 let customMessages = loadCustomMessages();
@@ -854,16 +867,23 @@ async function sendInviteLog(member, attribution, inviterId) {
   const counts = inviteDisplay(member.guild.id, inviterId);
   const source = attribution.source === 'vanity'
     ? 'the vanity URL'
-    : attribution.code
+    : attribution.source === 'rejoin'
+      ? 'a rejoin within 7 days'
+      : attribution.code
       ? `invite \`${attribution.code}\``
       : 'an unknown invite';
   const inviter = inviterId ? `<@${inviterId}>` : 'Unknown';
+  const eventDetails = attribution.source === 'rejoin'
+    ? 'Rejoin detected; not counted as a new invite.'
+    : attribution.fake
+      ? 'Fake join detected (Discord account created less than 7 days ago).'
+      : '';
 
   await channel.send({
     embeds: [new EmbedBuilder()
       .setColor(0x22c7d6)
-      .setTitle('📨 Member joined')
-      .setDescription(`${member} joined using ${source}. Invited by ${inviter} · ${counts.joins} total, ${counts.active} active invites.`)
+      .setTitle(attribution.source === 'rejoin' ? '🔁 Member rejoined' : '📨 Member joined')
+      .setDescription(`${member} ${attribution.source === 'rejoin' ? 'rejoined within 7 days' : `joined using ${source}`}. Invited by ${inviter} · ${counts.total} total, ${counts.active} active invites.${eventDetails ? `\n${eventDetails}` : ''}`)
       .setThumbnail(member.displayAvatarURL({ size: 256 }))],
     allowedMentions: { users: [member.id, ...(inviterId ? [inviterId] : [])], parse: [] }
   });
@@ -872,21 +892,41 @@ async function sendInviteLog(member, attribution, inviterId) {
 async function processMemberJoin(member) {
   const attribution = await identifyUsedInvite(member.guild);
   const invites = getGuildCommunity(member.guild.id).invites;
-  const inviterId = attribution.inviterId;
+  const now = Date.now();
+  pruneInviteDepartures(member.guild.id, invites, now);
 
-  if (inviterId) {
-    const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0 };
-    totals.joins = Number(totals.joins || 0) + 1;
+  const departure = invites.departures[member.id];
+  const leftAt = Number(departure?.leftAt || 0);
+  const isRejoin = Boolean(leftAt && now >= leftAt && now - leftAt <= SEVEN_DAYS_MS);
+  const accountAgeMs = now - Number(member.user.createdTimestamp || now);
+  const isFakeJoin = !isRejoin && accountAgeMs >= 0 && accountAgeMs < SEVEN_DAYS_MS;
+  const inviterId = isRejoin ? (departure.inviterId || null) : attribution.inviterId;
+
+  if (isRejoin) {
+    invites.rejoins = Number(invites.rejoins || 0) + 1;
+    if (inviterId) {
+      const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0, rejoins: 0, fakeJoins: 0 };
+      totals.rejoins = Number(totals.rejoins || 0) + 1;
+    }
   } else {
-    invites.unattributedJoins = Number(invites.unattributedJoins || 0) + 1;
+    if (inviterId) {
+      const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0, rejoins: 0, fakeJoins: 0 };
+      totals.joins = Number(totals.joins || 0) + 1;
+      if (isFakeJoin) totals.fakeJoins = Number(totals.fakeJoins || 0) + 1;
+    } else {
+      invites.unattributedJoins = Number(invites.unattributedJoins || 0) + 1;
+    }
+    if (isFakeJoin) invites.fakeJoins = Number(invites.fakeJoins || 0) + 1;
   }
 
   invites.invitees[member.id] = {
     inviterId,
-    code: attribution.code,
-    source: attribution.source,
-    joinedAt: Date.now()
+    code: isRejoin ? (departure.code || attribution.code) : attribution.code,
+    source: isRejoin ? (departure.source || attribution.source) : attribution.source,
+    joinedAt: now,
+    fake: isRejoin ? Boolean(departure.fake) : isFakeJoin
   };
+  delete invites.departures[member.id];
   saveCommunitySettings();
 
   try {
@@ -895,7 +935,11 @@ async function processMemberJoin(member) {
     console.error(`Could not send welcome embed in ${member.guild.name}:`, error.message);
   }
   try {
-    await sendInviteLog(member, attribution, inviterId);
+    await sendInviteLog(member, {
+      ...attribution,
+      source: isRejoin ? 'rejoin' : attribution.source,
+      fake: isFakeJoin
+    }, inviterId);
   } catch (error) {
     console.error(`Could not send invite log in ${member.guild.name}:`, error.message);
   }
@@ -905,15 +949,23 @@ async function processMemberLeave(member) {
   const invites = getGuildCommunity(member.guild.id).invites;
   const tracked = invites.invitees[member.id];
   const inviterId = tracked?.inviterId || null;
+  const leftAt = Date.now();
 
   if (tracked) {
     if (inviterId) {
-      const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0 };
+      const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0, rejoins: 0, fakeJoins: 0 };
       totals.leaves = Number(totals.leaves || 0) + 1;
     }
     delete invites.invitees[member.id];
-    saveCommunitySettings();
   }
+  invites.departures[member.id] = {
+    inviterId,
+    code: tracked?.code || null,
+    source: tracked?.source || 'unknown',
+    leftAt,
+    fake: Boolean(tracked?.fake)
+  };
+  saveCommunitySettings();
 
   try {
     await sendMemberEmbed(member, 'leave', inviterId);
@@ -1620,7 +1672,7 @@ client.on('interactionCreate', async i => {
           embeds: [new EmbedBuilder()
             .setColor(0x22c7d6)
             .setTitle(`Invite stats · ${user.username}`)
-            .setDescription(`**Total joins:** ${counts.joins}\n**Still in server:** ${counts.active}\n**Left:** ${counts.leaves}`)
+            .setDescription(`**Total join events:** ${counts.total}\n**New invite joins:** ${counts.joins}\n**Still in server:** ${counts.active}\n**Left:** ${counts.leaves}\n**Rejoins within 7 days:** ${counts.rejoins}\n**Fake joins (account under 7 days):** ${counts.fakeJoins}`)
             .setThumbnail(user.displayAvatarURL({ size: 256 }))]
         });
       }
@@ -1629,16 +1681,16 @@ client.on('interactionCreate', async i => {
         const rows = Object.entries(invites.totals)
           .map(([userId, totals]) => ({ userId, ...getInviteCounts(i.guildId, userId) }))
           .filter(row => row.joins > 0)
-          .sort((left, right) => right.active - left.active || right.joins - left.joins)
+          .sort((left, right) => right.active - left.active || right.total - left.total)
           .slice(0, 10);
 
         return i.reply({
           embeds: [new EmbedBuilder()
             .setColor(0x22c7d6)
             .setTitle('🏆 Invite Leaderboard')
-            .setDescription(rows.length
-              ? rows.map((row, index) => `**${index + 1}.** <@${row.userId}> — **${row.active}** active (${row.joins} joined, ${row.leaves} left)`).join('\n')
-              : 'No invite joins have been tracked yet.')],
+            .setDescription(`**Server fake joins:** ${Number(invites.fakeJoins || 0)} · **Rejoins within 7 days:** ${Number(invites.rejoins || 0)}\n\n${rows.length
+              ? rows.map((row, index) => `**${index + 1}.** <@${row.userId}> — **${row.active}** active (${row.joins} new, ${row.rejoins} rejoined, ${row.fakeJoins} fake, ${row.leaves} left)`).join('\n')
+              : 'No invite joins have been tracked yet.'}`)],
           allowedMentions: { parse: [] }
         });
       }
@@ -1656,13 +1708,10 @@ client.on('interactionCreate', async i => {
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
         .setTitle('LegacyMC Commands')
-        .setDescription('Commands for the LegacyMC Minecraft community.')
+        .setDescription('Commands available in this Discord server.')
         .addFields(
-          { name: 'Account linking', value: '`/minelink` · `/mineunlink` · `/mineaccount`' },
-          { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Community', value: '`/invites check` · `/invites leaderboard` · `/setup` · `/welcome panel` · `/leave panel` (welcome/leave setup is staff-only)' },
-          { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
           { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponder embed add/edit/list/remove` for embedded replies · use each set’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
         );
 
@@ -1702,129 +1751,6 @@ client.on('interactionCreate', async i => {
       return i.editReply(`Announcement queued for Minecraft. ID: \`${result.id}\``);
     }
 
-    if (command === 'minelink') {
-      const code = getString(i, 'code');
-
-      if (!code || !/^\d{6}$/.test(code)) {
-        return i.reply({ content: 'Enter the six-digit code from Minecraft `/discordlink`.', flags: MessageFlags.Ephemeral });
-      }
-
-      const result = await api('/v1/links/verify', 'POST', {
-        code,
-        discordId: i.user.id
-      });
-
-      return i.reply({
-        content: `Your Minecraft account **${result.link.username}** is now linked.`,
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (command === 'mineunlink') {
-      const account = linkedAccount(i.user.id);
-
-      if (!account) {
-        return i.reply({ content: 'You do not have a linked Minecraft account.', flags: MessageFlags.Ephemeral });
-      }
-
-      await api(`/v1/links/${i.user.id}`, 'DELETE');
-      return i.reply({ content: 'Your Minecraft account has been unlinked.', flags: MessageFlags.Ephemeral });
-    }
-
-    if (command === 'mineaccount') {
-      const account = linkedAccount(i.user.id);
-
-      if (!account) {
-        return i.reply({ content: 'No account linked. Use `/minelink`.', flags: MessageFlags.Ephemeral });
-      }
-
-      return i.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x3498db)
-            .setTitle('Linked Minecraft Account')
-            .addFields(
-              { name: 'Username', value: account.username || 'Unknown', inline: true },
-              { name: 'UUID', value: account.uuid || 'Unknown', inline: true }
-            )
-        ],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (command === 'mineleaderboard') {
-      const type = getString(i, 'type') || 'kills';
-      if (!['kills', 'deaths', 'money', 'playtime', 'coins'].includes(type)) {
-        return i.reply({ content: 'Invalid leaderboard type.', flags: MessageFlags.Ephemeral });
-      }
-
-      const result = await api(`/v1/leaderboards/${encodeURIComponent(type)}`);
-      const rows = result.rows || [];
-
-      const description = rows.length
-        ? rows.map((p, index) => {
-            const value = type === 'playtime'
-              ? `${formatNumber(Math.floor((p.playtimeTicks || 0) / 20))} seconds`
-              : formatNumber(p[type]);
-            return `**${index + 1}. ${p.username || 'Unknown'}** — ${value}`;
-          }).join('\n')
-        : 'No player stats are available yet.';
-
-      return i.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0xf1c40f)
-            .setTitle(`LegacyMC ${type} leaderboard`)
-            .setDescription(description)
-        ]
-      });
-    }
-
-    if (command === 'minestats') {
-      const name = getString(i, 'player', 'username');
-      let player = name ? findPlayer(name) : null;
-
-      if (!player) {
-        const account = linkedAccount(i.user.id);
-        player = account ? players.get(account.uuid) : null;
-      }
-
-      if (!player) {
-        return i.reply({
-          content: 'Player stats were not found. They may need to join the server first.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      return i.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x3498db)
-            .setTitle(`${player.username || 'Player'} — Stats`)
-            .addFields(
-              { name: 'Kills', value: formatNumber(player.kills), inline: true },
-              { name: 'Deaths', value: formatNumber(player.deaths), inline: true },
-              { name: 'Playtime', value: `${formatNumber(Math.floor((player.playtimeTicks || 0) / 20))} seconds`, inline: true },
-              { name: 'Money', value: player.money == null ? 'Not available' : formatNumber(player.money), inline: true },
-              { name: 'Coins', value: formatNumber(coins.get(player.uuid)), inline: true }
-            )
-        ]
-      });
-    }
-
-    if (command === 'minebalance') {
-      const account = linkedAccount(i.user.id);
-
-      if (!account) {
-        return i.reply({ content: 'Link your Minecraft account first using `/minelink`.', flags: MessageFlags.Ephemeral });
-      }
-
-      return i.reply({
-        content: `**${account.username}** has **${formatNumber(coins.get(account.uuid))} coins**.`,
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
     if (['addcoin', 'takecoin', 'givecoins', 'takecoins'].includes(command)) {
       if (!isAdmin(i)) return deny(i);
 
@@ -1852,63 +1778,6 @@ client.on('interactionCreate', async i => {
       return i.reply({
         content: `Updated **${player.username}** by ${subtract ? '-' : '+'}${formatNumber(amount)} coins. New balance: **${formatNumber(result.balance)}**.`,
         flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (['minekick', 'mineban', 'minetempban', 'mineunban'].includes(command)) {
-      if (!isModerator(i)) return deny(i);
-
-      const player = getString(i, 'player', 'username');
-      const reason = getString(i, 'reason') || 'No reason provided';
-      const hours = getInteger(i, 'hours');
-
-      if (!player) {
-        return i.reply({ content: 'Provide a Minecraft player name.', flags: MessageFlags.Ephemeral });
-      }
-
-      if (command === 'minetempban' && (!hours || hours < 1)) {
-        return i.reply({ content: 'Provide a positive ban duration.', flags: MessageFlags.Ephemeral });
-      }
-
-      const typeMap = {
-        minekick: 'kick',
-        mineban: 'ban',
-        minetempban: 'tempban',
-        mineunban: 'unban'
-      };
-
-      const result = await api('/v1/moderation', 'POST', {
-        type: typeMap[command],
-        player,
-        reason,
-        hours,
-        actor: i.user.id
-      });
-
-      return i.reply({
-        content: `Moderation request recorded for **${player}** (ID: \`${result.id}\`). This request is not executed in Minecraft yet.`,
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (command === 'minestatus') {
-      const serverInfo = players.get('__server__');
-
-      if (!serverInfo?.heartbeat) {
-        return i.reply({ content: 'Waiting for a Minecraft plugin heartbeat.', flags: MessageFlags.Ephemeral });
-      }
-
-      const ageSeconds = Math.floor((Date.now() - serverInfo.heartbeat) / 1000);
-      const online = ageSeconds <= 120;
-
-      return i.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(online ? 0x2ecc71 : 0xe74c3c)
-            .setTitle('LegacyMC Server Status')
-            .setDescription(online ? '🟢 Server heartbeat is active' : '🔴 Server heartbeat is stale')
-            .addFields({ name: 'Last heartbeat', value: `${ageSeconds} seconds ago`, inline: true })
-        ]
       });
     }
 
