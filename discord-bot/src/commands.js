@@ -2,7 +2,8 @@
 import {
   SlashCommandBuilder,
   ChannelType,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  ApplicationCommandOptionType
 } from 'discord.js';
 
 const playerOption = name =>
@@ -189,8 +190,7 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName('autoresponder')
-    .setDescription('Create and manage automatic keyword or phrase replies (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .setDescription('Manage automatic keyword and phrase replies')
     .addSubcommand(s =>
       s.setName('add')
         .setDescription('Add an embedded or normal text auto-reply')
@@ -346,17 +346,16 @@ export const commands = [
 ].map(command => command.toJSON());
 
 const autoReplyCommand = commands.find(command => command.name === 'autoresponder');
-const embedAutoReplyCommand = structuredClone(autoReplyCommand);
-embedAutoReplyCommand.name = 'autoresponderembed';
-embedAutoReplyCommand.description = 'Create and manage embedded keyword or phrase replies (admin only)';
-embedAutoReplyCommand.options.find(option => option.name === 'add').description = 'Add an embedded auto-reply';
-embedAutoReplyCommand.options.find(option => option.name === 'add').options.find(option => option.name === 'reply').description = 'Reply text shown inside the embed';
-embedAutoReplyCommand.options.find(option => option.name === 'panel').description = 'Open the embedded auto-reply editor';
+const embedReplySubcommands = structuredClone(autoReplyCommand.options);
 
-autoReplyCommand.description = 'Create and manage normal text keyword or phrase replies (admin only)';
+autoReplyCommand.description = 'Manage automatic keyword and phrase replies';
 autoReplyCommand.options.find(option => option.name === 'add').description = 'Add a normal text auto-reply';
 autoReplyCommand.options.find(option => option.name === 'add').options.find(option => option.name === 'reply').description = 'Normal text sent as the reply';
 autoReplyCommand.options.find(option => option.name === 'panel').description = 'Open the normal text auto-reply editor';
+
+embedReplySubcommands.find(option => option.name === 'add').description = 'Add an embedded auto-reply';
+embedReplySubcommands.find(option => option.name === 'add').options.find(option => option.name === 'reply').description = 'Reply text shown inside the embed';
+embedReplySubcommands.find(option => option.name === 'panel').description = 'Open the embedded auto-reply editor';
 
 for (const subcommand of autoReplyCommand.options) {
   if (['add', 'edit'].includes(subcommand.name)) {
@@ -364,4 +363,9 @@ for (const subcommand of autoReplyCommand.options) {
   }
 }
 
-commands.push(embedAutoReplyCommand);
+autoReplyCommand.options.push({
+  type: ApplicationCommandOptionType.SubcommandGroup,
+  name: 'embed',
+  description: 'Manage embedded auto-replies',
+  options: embedReplySubcommands
+});

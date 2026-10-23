@@ -69,9 +69,9 @@ Discord:
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
 - `/autoresponder add trigger:<word or phrase> reply:<text> matchmode:<optional>` — add a normal text auto-reply.
-- `/autoresponderembed add trigger:<word or phrase> reply:<text> matchmode:<optional> title:<optional> color:<optional HEX>` — add an embed containing only the optional custom title and reply text.
-- Both commands support `edit`, `editreply`, `editmatchmode`, `remove`, `delete`, `show`, `showraw`, `list`, `help`, and `panel`. Each command manages its own reply type and opens its own Add/Manage/List buttons.
-- The add, edit, and remove commands save immediately. The visual panel requires clicking **Save Changes**. `contains` is the default match mode and matches a complete word or phrase, ignoring case; `exact`, `starts_with`, and `ends_with` are also available. Up to 25 triggers are supported per server. Run `npm run deploy` after updating the bot to register both commands.
+- `/autoresponder embed add trigger:<word or phrase> reply:<text> matchmode:<optional> title:<optional> color:<optional HEX>` — add an embed containing only the optional custom title and reply text.
+- Both command paths support `edit`, `editreply`, `editmatchmode`, `remove`, `delete`, `show`, `showraw`, `list`, `help`, and `panel`. Each path manages its own reply type and provides Add/Manage/List buttons.
+- `/autoresponder help` is available to everyone. All other autoresponder actions are restricted to staff. Add/edit/remove save immediately; the visual panel requires clicking **Save Changes**. `contains` is the default match mode; `exact`, `starts_with`, and `ends_with` are also available. Up to 25 triggers are supported per server. Run `npm run deploy` after updating the bot to register the command changes.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.

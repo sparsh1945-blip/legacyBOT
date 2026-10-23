@@ -426,13 +426,15 @@ client.on('interactionCreate', async i => {
   const command = i.commandName;
 
   try {
-    if (command === 'autoresponder' || command === 'autoresponderembed') {
-      if (!isAdmin(i)) return deny(i);
-      if (!i.guildId) return deny(i, 'Use this command inside a server.');
-
-      const replyType = command === 'autoresponderembed' ? 'embed' : 'text';
-      const commandRoot = `/${command}`;
+    if (command === 'autoresponder') {
       const action = i.options.getSubcommand(false);
+      const group = i.options.getSubcommandGroup(false);
+      const replyType = group === 'embed' ? 'embed' : 'text';
+      const commandRoot = group ? '/autoresponder embed' : '/autoresponder';
+
+      if (action !== 'help' && !isAdmin(i)) return deny(i);
+      if (action !== 'help' && !i.guildId) return deny(i, 'Use this command inside a server.');
+
       if (!action) {
         return i.reply({
           embeds: [autoResponderNotice(
@@ -711,35 +713,43 @@ client.on('interactionCreate', async i => {
           .setColor(0x8e44ad)
           .setAuthor({ name: 'LEGACY MC • COMMAND GUIDE' })
           .setTitle('✨ Auto-Responder Help')
-          .setDescription(replyType === 'text'
-            ? 'Build normal text replies for words or phrases your community uses.'
-            : 'Build embedded replies with a custom title and message.')
+          .setDescription(group === 'embed'
+            ? 'Build embedded replies with a custom title and message.'
+            : 'Build normal text replies with `/autoresponder`. For embedded replies, use `/autoresponder embed`. This help command is public; the management commands are staff-only.')
           .addFields(
             {
               name: '➕ Add a reply',
-              value: `\`${commandRoot} add\`\n**Required:** \`trigger\`, \`reply\`\n**Optional:** \`matchmode\`${replyType === 'embed' ? ', `title`, `color`' : ''}`
+              value: group === 'embed'
+                ? `\`${commandRoot} add\`\n**Required:** \`trigger\`, \`reply\`\n**Optional:** \`matchmode\`, \`title\`, \`color\``
+                : '`/autoresponder add` adds a normal text reply.\n`/autoresponder embed add` adds an embedded reply with optional title and color.'
             },
             {
               name: '✏️ Edit a reply',
-              value: `\`${commandRoot} editreply\` changes the reply. \`${commandRoot} edit\` can also rename the trigger.${replyType === 'embed' ? ' It can also change the title and color.' : ''}`
+              value: group === 'embed'
+                ? `\`${commandRoot} editreply\` changes the reply. \`${commandRoot} edit\` can also rename the trigger and change the title or color.`
+                : '`/autoresponder editreply` changes a normal reply. Use `/autoresponder embed editreply` for an embedded reply.'
             },
             {
               name: '🧰 More options',
               value: `\`${commandRoot} editmatchmode\` changes matching.\n\`${commandRoot} remove\` deletes a trigger.\n\`${commandRoot} show\` and \`showraw\` inspect a reply.\n\`${commandRoot} list\` lists replies; \`panel\` opens the editor.`
             },
             {
-              name: replyType === 'embed' ? '🎨 Example' : '💬 Example',
-              value: `\`trigger: server ip\`\n\`reply: Java: play.example.net\`${replyType === 'embed' ? '\n`title: Join our server`\n`color: #22C7D6`' : ''}`
+              name: group === 'embed' ? '🎨 Example' : '💬 Examples',
+              value: `\`trigger: server ip\`\n\`reply: Java: play.example.net\`${group === 'embed' ? '\n`title: Join our server`\n`color: #22C7D6`' : '\nFor an embed, use `/autoresponder embed add` and optionally set a title and color.'}`
             },
             {
               name: '💡 Trigger matching',
               value: '`contains` (default) matches a complete word or phrase; `exact` requires the whole message; `starts_with` and `ends_with` require the trigger at that edge. Matching ignores letter case.'
+            },
+            {
+              name: '🔒 Permissions',
+              value: 'Anyone can view this help. Only staff can add, edit, show, list, or remove autoresponders.'
             }
           )
           .setFooter({ text: 'Up to 25 auto-replies per server • Replies activate immediately' })
           .setTimestamp();
 
-        return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        return i.reply({ embeds: [embed] });
       }
     }
 
@@ -783,7 +793,7 @@ client.on('interactionCreate', async i => {
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
-          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponderembed add/edit/list/remove` for embedded replies · use each command’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
+          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponder embed add/edit/list/remove` for embedded replies · use each set’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
         );
 
       return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
