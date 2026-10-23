@@ -625,6 +625,91 @@ function fitCanvasText(context, text, maxWidth, startSize, minSize = 24) {
   return size;
 }
 
+function canvasSafeText(value, fallback = '') {
+  const text = String(value || '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^\x20-\x7E]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return text || fallback;
+}
+
+function memberBackgroundPath(guildId, kind) {
+  return path.join(customDir, 'community-backgrounds', `${guildId}-${kind}.img`);
+}
+
+function cacheMemberBackground(guildId, kind, imageBytes) {
+  const cachePath = memberBackgroundPath(guildId, kind);
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+  const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, imageBytes);
+  fs.renameSync(tempPath, cachePath);
+}
+
+async function fetchRemoteImageBytes(imageUrl) {
+  const parsedUrl = new URL(imageUrl);
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    throw new Error('Image URL must use HTTP or HTTPS.');
+  }
+
+  const response = await fetch(parsedUrl, { signal: AbortSignal.timeout(12000) });
+  if (!response.ok) throw new Error(`Image URL returned HTTP ${response.status}.`);
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.toLowerCase().includes('text/html')) {
+    throw new Error('This link opens a webpage. Use a direct image URL or Discord Copy Media Link.');
+  }
+
+  const maxBytes = 10 * 1024 * 1024;
+  const declaredSize = Number(response.headers.get('content-length'));
+  if (declaredSize > maxBytes) throw new Error('Image is larger than 10 MB.');
+
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of response.body || []) {
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maxBytes) throw new Error('Image is larger than 10 MB.');
+    chunks.push(chunk);
+  }
+  if (!totalBytes) throw new Error('The image URL returned an empty file.');
+  return Buffer.concat(chunks, totalBytes);
+}
+
+async function saveMemberBackground(guildId, kind, imageUrl) {
+  const cachePath = memberBackgroundPath(guildId, kind);
+  if (!imageUrl) {
+    try {
+      fs.unlinkSync(cachePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    return;
+  }
+
+  const imageBytes = await fetchRemoteImageBytes(imageUrl);
+  await loadImage(imageBytes);
+  cacheMemberBackground(guildId, kind, imageBytes);
+}
+
+async function loadMemberBackground(guildId, kind, imageUrl) {
+  const cachePath = memberBackgroundPath(guildId, kind);
+  if (fs.existsSync(cachePath)) {
+    try {
+      return await loadImage(fs.readFileSync(cachePath));
+    } catch (error) {
+      console.warn('Cached member card background is invalid; trying its URL:', error.message);
+      fs.unlinkSync(cachePath);
+    }
+  }
+
+  if (!imageUrl) return null;
+  const imageBytes = await fetchRemoteImageBytes(imageUrl);
+  const image = await loadImage(imageBytes);
+  cacheMemberBackground(guildId, kind, imageBytes);
+  return image;
+}
+
 async function buildMemberCard(member, settings, inviterId, kind) {
   const width = 1200;
   const height = 650;
@@ -641,10 +726,10 @@ async function buildMemberCard(member, settings, inviterId, kind) {
   context.fillStyle = fallback;
   context.fillRect(0, 0, width, height);
 
-  if (settings.imageUrl) {
+  if (settings.imageUrl || fs.existsSync(memberBackgroundPath(member.guild.id, kind))) {
     try {
-      const background = await loadImage(settings.imageUrl);
-      drawCoverImage(context, background, width, height);
+      const background = await loadMemberBackground(member.guild.id, kind, settings.imageUrl);
+      if (background) drawCoverImage(context, background, width, height);
     } catch (error) {
       console.warn('Could not load member card background:', error.message);
     }
@@ -660,8 +745,11 @@ async function buildMemberCard(member, settings, inviterId, kind) {
   context.textAlign = 'left';
   context.textBaseline = 'middle';
   const defaultHeading = kind === 'welcome' ? 'WELCOME' : 'GOODBYE';
-  const heading = renderMemberTemplate(settings.title || defaultHeading, member, settings, inviterId)
-    .replace(/<a?:[a-zA-Z0-9_]+:\d+>/g, '').trim() || defaultHeading;
+  const heading = canvasSafeText(
+    renderMemberTemplate(settings.title || defaultHeading, member, settings, inviterId)
+      .replace(/<a?:[a-zA-Z0-9_]+:\d+>/g, ''),
+    defaultHeading
+  );
   const headingSize = fitCanvasText(context, heading, 610, 43, 25);
   context.font = `500 ${headingSize}px Arial, sans-serif`;
   context.fillStyle = '#ffffff';
@@ -675,7 +763,7 @@ async function buildMemberCard(member, settings, inviterId, kind) {
   context.fillStyle = '#ffffff';
   context.fillText(username, 445, 350, 690);
 
-  const subline = `${member.guild.name}  •  Member #${member.guild.memberCount}`;
+  const subline = `${canvasSafeText(member.guild.name, 'Server')} | Member #${member.guild.memberCount}`;
   context.font = '400 30px Arial, sans-serif';
   context.fillStyle = '#f0f0f0';
   context.fillText(subline, 445, 426, 690);
@@ -849,6 +937,7 @@ async function configureMemberEmbed(interaction, kind) {
   if (!message) return interaction.reply({ content: 'Enter an embed message.', flags: MessageFlags.Ephemeral });
   if (!color) return interaction.reply({ content: 'Use a six-digit HEX color, such as `#22C7D6`.', flags: MessageFlags.Ephemeral });
 
+  let deferredForImage = false;
   if (imageUrl) {
     let parsedUrl;
     try {
@@ -859,6 +948,17 @@ async function configureMemberEmbed(interaction, kind) {
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       return interaction.reply({ content: 'Image URLs must start with `http://` or `https://`.', flags: MessageFlags.Ephemeral });
     }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    deferredForImage = true;
+    try {
+      await saveMemberBackground(interaction.guildId, kind, imageUrl);
+    } catch (error) {
+      return interaction.editReply({
+        content: `I could not load that image URL: ${error.message} Upload the image to Discord, choose **Copy Media Link**, and try again.`
+      });
+    }
+  } else {
+    await saveMemberBackground(interaction.guildId, kind, '');
   }
 
   const settings = getGuildCommunity(interaction.guildId);
@@ -874,10 +974,11 @@ async function configureMemberEmbed(interaction, kind) {
   };
   saveCommunitySettings();
 
-  return interaction.reply({
+  const response = {
     content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} card saved for <#${channel.id}>. Use placeholders such as \`{username}\`, \`{mention}\`, \`{member_count}\`, \`{join_date}\`, \`{inviter}\`, \`{invites}\`, and \`{emoji}\`.`,
     flags: MessageFlags.Ephemeral
-  });
+  };
+  return deferredForImage ? interaction.editReply(response) : interaction.reply(response);
 }
 
 function memberPanelCustomId(kind, action) {
@@ -981,7 +1082,7 @@ function memberPanelModal(kind, action, settings = {}) {
   } else if (action === 'background') {
     modal.setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} background image`);
     modal.addComponents(new ActionRowBuilder().addComponents(
-      input('image_url', 'Direct image URL or Discord upload link', TextInputStyle.Short, settings.imageUrl || '', 2000, false, 'Leave blank to remove the image')
+      input('image_url', 'Direct image URL or Discord upload link', TextInputStyle.Short, settings.imageUrl || '', 2000, false, 'Upload to Discord, copy Media Link, and paste it here')
     ));
   } else if (action === 'add_link') {
     modal.setTitle(`Add a ${kind} link button`);
@@ -2175,6 +2276,7 @@ client.on('interactionCreate', async i => {
       }
 
       if (action === 'confirm_reset') {
+        await saveMemberBackground(i.guildId, kind, '');
         delete guildSettings[kind];
         saveCommunitySettings();
         return i.update({
@@ -2231,6 +2333,18 @@ client.on('interactionCreate', async i => {
           if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
             return i.reply({ content: 'Image URLs must start with http:// or https://.', flags: MessageFlags.Ephemeral });
           }
+          await i.deferUpdate();
+          try {
+            await saveMemberBackground(i.guildId, kind, imageUrl);
+          } catch (error) {
+            return i.editReply({
+              content: `That image link could not be loaded: ${error.message} Upload the image to Discord, choose **Copy Media Link**, and paste that link here.`,
+              embeds: [memberPanelEmbed(i.guildId, kind)],
+              components: memberPanelComponents(kind, settings)
+            });
+          }
+        } else {
+          await saveMemberBackground(i.guildId, kind, '');
         }
         settings.imageUrl = imageUrl;
       } else if (action === 'modal_add_link') {
@@ -2275,6 +2389,7 @@ client.on('interactionCreate', async i => {
         embeds: [memberPanelEmbed(i.guildId, kind)],
         components: memberPanelComponents(kind, settings)
       };
+      if (i.deferred) return i.editReply(savedPanel);
       if (i.isFromMessage()) return i.update(savedPanel);
       return i.reply({ ...savedPanel, flags: MessageFlags.Ephemeral });
     }
