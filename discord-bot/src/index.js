@@ -1,7 +1,8 @@
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 import {
@@ -25,6 +26,9 @@ import {
 
 import { app } from './api.js';
 import { players } from './store.js';
+
+const botRoot = fileURLToPath(new URL('../', import.meta.url));
+dotenv.config({ path: path.join(botRoot, '.env') });
 
 const token = process.env.DISCORD_TOKEN;
 const apiToken = process.env.API_TOKEN;
@@ -258,7 +262,7 @@ async function replyError(i, error) {
 
 // Custom message storage
 
-const customDir = path.resolve('data');
+const customDir = path.join(botRoot, 'data');
 const customFile = path.join(customDir, 'custom-messages.json');
 const communityFile = path.join(customDir, 'community-settings.json');
 

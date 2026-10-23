@@ -2,8 +2,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const dir = path.resolve('data');
+const botRoot = fileURLToPath(new URL('../', import.meta.url));
+const dir = path.join(botRoot, 'data');
 
 fs.mkdirSync(dir, {
   recursive: true,
