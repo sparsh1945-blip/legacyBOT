@@ -405,9 +405,25 @@ client.on('interactionCreate', async i => {
       if (!action) {
         return i.reply({
           embeds: [autoResponderNotice(
-            '✨ Choose an Auto-Responder Action',
-            'Available options: **add**, **editreply**, **editmatchmode**, **remove**, **show**, **showraw**, **list**, **help**, and **panel**.\n\nStart with `/autoresponder add` to create a colorful reply.'
+            '✨ Auto-Responder Controls',
+            'Choose an action below: **Add** opens a form, **Manage** lets you edit or remove replies, and **List** shows what is configured. You can also use `/autoresponder add` and the other subcommands from Discord’s command picker.'
           )],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('legacy_custom_start_add')
+                .setLabel('Add reply')
+                .setStyle(ButtonStyle.Success),
+              new ButtonBuilder()
+                .setCustomId('legacy_custom_open_manager')
+                .setLabel('Manage replies')
+                .setStyle(ButtonStyle.Primary),
+              new ButtonBuilder()
+                .setCustomId('legacy_custom_show_list')
+                .setLabel('List replies')
+                .setStyle(ButtonStyle.Secondary)
+            )
+          ],
           flags: MessageFlags.Ephemeral
         });
       }
@@ -1015,6 +1031,27 @@ client.on('interactionCreate', async i => {
     const key = draftKey(i);
 
     if (i.isButton()) {
+      if (i.customId === 'legacy_custom_start_add') {
+        customEditOrigins.delete(key);
+        return i.showModal(customModal('legacy_custom_modal_quick_add'));
+      }
+
+      if (i.customId === 'legacy_custom_open_manager') {
+        return i.update({
+          content: null,
+          embeds: [customPanel(messages)],
+          components: customButtons(messages)
+        });
+      }
+
+      if (i.customId === 'legacy_custom_show_list') {
+        return i.update({
+          content: null,
+          embeds: [customPanel(customMessages[i.guildId] || {})],
+          components: []
+        });
+      }
+
       if (i.customId === 'legacy_custom_add') {
         customEditOrigins.delete(key);
         return i.showModal(customModal('legacy_custom_modal_add'));
@@ -1081,6 +1118,9 @@ client.on('interactionCreate', async i => {
     }
 
     if (i.isModalSubmit()) {
+      const modalMessages = i.customId === 'legacy_custom_modal_quick_add'
+        ? structuredClone(customMessages[i.guildId] || {})
+        : messages;
       const trigger = normalizeTrigger(i.fields.getTextInputValue('trigger'));
       const title = i.fields.getTextInputValue('title').trim();
       const body = i.fields.getTextInputValue('body').trim();
@@ -1108,17 +1148,17 @@ client.on('interactionCreate', async i => {
       }
 
       const matchMode = oldTrigger
-        ? messages[oldTrigger]?.matchMode || 'contains'
+        ? modalMessages[oldTrigger]?.matchMode || 'contains'
         : 'contains';
 
-      if (Object.hasOwn(messages, trigger) && trigger !== oldTrigger) {
+      if (Object.hasOwn(modalMessages, trigger) && trigger !== oldTrigger) {
         return i.reply({
           content: `The trigger **${trigger}** already exists. Choose a different one.`,
           flags: MessageFlags.Ephemeral
         });
       }
 
-      if (!oldTrigger && Object.keys(messages).length >= 25) {
+      if (!oldTrigger && Object.keys(modalMessages).length >= 25) {
         return i.reply({
           content: 'This server has reached the 25 auto-reply limit.',
           flags: MessageFlags.Ephemeral
@@ -1126,16 +1166,24 @@ client.on('interactionCreate', async i => {
       }
 
       if (oldTrigger && oldTrigger !== trigger) {
-        delete messages[oldTrigger];
+        delete modalMessages[oldTrigger];
       }
 
-      setAutoReply(messages, trigger, {
+      setAutoReply(modalMessages, trigger, {
         trigger,
         title,
         body,
         color: color.toUpperCase(),
         matchMode
       });
+
+      if (i.customId === 'legacy_custom_modal_quick_add') {
+        saveGuildAutoReplies(i.guildId, modalMessages);
+        return i.reply({
+          content: `Added **${trigger}** and activated its auto-reply.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
 
       return i.reply({
         content: `Draft updated for **${trigger}**. Click **Save Changes** in the autoresponder panel to activate it.`,
