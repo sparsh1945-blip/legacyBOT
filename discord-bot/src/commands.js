@@ -116,6 +116,10 @@ export const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('setupsneakai')
+    .setDescription('Set up the dedicated SneakAI channel (staff only)'),
+
+  new SlashCommandBuilder()
     .setName('announce')
     .setDescription('Send a Minecraft server announcement (staff only)')
     .addStringOption(o =>

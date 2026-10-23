@@ -30,6 +30,7 @@ const apiToken = process.env.API_TOKEN;
 const nvidiaApiKey = process.env.NVIDIA_API_KEY?.trim();
 const nvidiaModel = process.env.NVIDIA_MODEL?.trim() || 'nvidia/nemotron-3-ultra-550b-a55b';
 const aiCooldowns = new Map();
+const aiSetupWarnings = new Set();
 const port = Number(process.env.PORT || 8787);
 
 if (!token || !apiToken) {
@@ -120,6 +121,29 @@ async function askNvidia(question) {
   const answer = data?.choices?.[0]?.message?.content?.trim();
   if (!answer) throw new Error('NVIDIA returned an empty response.');
   return answer;
+}
+
+function aiCooldownRemaining(userId) {
+  const now = Date.now();
+  for (const [id, expiresAt] of aiCooldowns) {
+    if (expiresAt <= now) aiCooldowns.delete(id);
+  }
+  return Math.max(0, Math.ceil(((aiCooldowns.get(userId) || 0) - now) / 1000));
+}
+
+function aiResponseText(answer) {
+  const maxLength = 1900;
+  return answer.length > maxLength
+    ? `${answer.slice(0, maxLength - 24)}\n\n…response shortened`
+    : answer;
+}
+
+function nvidiaFailureText(error) {
+  if (error.status === 401 || error.status === 403) {
+    return 'NVIDIA rejected the API key. Check `NVIDIA_API_KEY` in the bot environment.';
+  }
+  if (error.status === 429) return 'NVIDIA AI is busy or rate limited right now. Please try again later.';
+  return 'The AI could not respond right now. Please try again shortly.';
 }
 
 // Permissions
@@ -233,6 +257,8 @@ function getGuildCommunity(guildId) {
   }
 
   const settings = communitySettings[guildId];
+  if (!settings.sneakai || typeof settings.sneakai !== 'object') settings.sneakai = {};
+  settings.sneakai.channelId ??= null;
   if (!settings.invites || typeof settings.invites !== 'object') {
     settings.invites = { logChannelId: null, totals: {}, invitees: {}, unattributedJoins: 0 };
   }
@@ -245,6 +271,64 @@ function getGuildCommunity(guildId) {
   settings.invites.fakeJoins ||= 0;
   settings.invites.rejoins ||= 0;
   return settings;
+}
+
+function sneakaiPanelEmbed(guildId) {
+  const config = getGuildCommunity(guildId).sneakai;
+  const channelStatus = config.channelId ? `<#${config.channelId}>` : 'Not selected';
+  const ready = Boolean(config.channelId && nvidiaApiKey);
+
+  return new EmbedBuilder()
+    .setColor(ready ? 0x2ecc71 : 0xf1c40f)
+    .setTitle('🤖 SneakAI Setup')
+    .setDescription('Choose one text channel where members can talk to SneakAI normally. It will answer messages only in that channel.')
+    .addFields(
+      { name: 'AI Channel', value: channelStatus, inline: true },
+      { name: 'Status', value: ready ? 'Ready' : 'Requirements needed', inline: true }
+    )
+    .setFooter({ text: 'Only server administrators can change this setup.' });
+}
+
+function sneakaiPanelComponents() {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('legacy_sneakai_set_channel')
+      .setLabel('Set Channel')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('legacy_sneakai_requirements')
+      .setLabel('Requirements')
+      .setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+async function sneakaiRequirementsEmbed(guild) {
+  const config = getGuildCommunity(guild.id).sneakai;
+  const channel = config.channelId
+    ? guild.channels.cache.get(config.channelId) || await guild.channels.fetch(config.channelId).catch(() => null)
+    : null;
+  let permissions = 'Select a text channel first.';
+
+  if (channel && guild.members.me) {
+    const channelPermissions = channel.permissionsFor(guild.members.me);
+    const missing = [];
+    if (!channelPermissions?.has(PermissionFlagsBits.ViewChannel)) missing.push('View Channel');
+    if (!channelPermissions?.has(PermissionFlagsBits.SendMessages)) missing.push('Send Messages');
+    permissions = missing.length ? `❌ Missing: ${missing.join(', ')}` : '✅ Can view and reply in the selected channel';
+  } else if (config.channelId) {
+    permissions = '❌ The selected channel is unavailable to the bot.';
+  }
+
+  return new EmbedBuilder()
+    .setColor(0x22c7d6)
+    .setTitle('SneakAI Requirements')
+    .setDescription('SneakAI replies to normal text messages only in the selected AI channel.')
+    .addFields(
+      { name: 'NVIDIA API Key', value: nvidiaApiKey ? '✅ Configured' : '❌ Add `NVIDIA_API_KEY` to the bot `.env`, then restart it.' },
+      { name: 'AI Channel', value: config.channelId ? `<#${config.channelId}>` : '❌ Choose one with **Set Channel**.' },
+      { name: 'Bot Channel Permissions', value: permissions },
+      { name: 'Message Content Intent', value: 'Enable **Message Content Intent** in the Discord Developer Portal for the bot application.' }
+    );
 }
 
 function getInviteCounts(guildId, inviterId) {
@@ -1262,8 +1346,25 @@ client.on('interactionCreate', async i => {
   const command = i.commandName;
 
   try {
+    if (command === 'setupsneakai') {
+      if (!isAdmin(i)) return deny(i);
+      if (!i.guildId) return deny(i, 'Use this command inside a server.');
+      return i.reply({
+        embeds: [sneakaiPanelEmbed(i.guildId)],
+        components: sneakaiPanelComponents(),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
     if (command === 'ask') {
       if (!i.guildId) return deny(i, 'Use this command inside a server.');
+      const aiChannelId = getGuildCommunity(i.guildId).sneakai.channelId;
+      if (!aiChannelId) {
+        return i.reply({ content: 'SneakAI has not been set up yet. Staff can run `/setupsneakai`.', flags: MessageFlags.Ephemeral });
+      }
+      if (i.channelId !== aiChannelId) {
+        return i.reply({ content: `Use SneakAI in <#${aiChannelId}>.`, flags: MessageFlags.Ephemeral });
+      }
       if (!nvidiaApiKey) {
         return i.reply({
           content: 'The AI assistant is not configured yet. The bot owner needs to set `NVIDIA_API_KEY` in the bot environment and restart it.',
@@ -1271,36 +1372,22 @@ client.on('interactionCreate', async i => {
         });
       }
 
-      const now = Date.now();
-      for (const [userId, expiresAt] of aiCooldowns) {
-        if (expiresAt <= now) aiCooldowns.delete(userId);
-      }
-      const cooldownUntil = aiCooldowns.get(i.user.id) || 0;
-      if (cooldownUntil > now) {
-        const seconds = Math.ceil((cooldownUntil - now) / 1000);
+      const seconds = aiCooldownRemaining(i.user.id);
+      if (seconds > 0) {
         return i.reply({
           content: `Please wait ${seconds} second${seconds === 1 ? '' : 's'} before asking again.`,
           flags: MessageFlags.Ephemeral
         });
       }
 
-      aiCooldowns.set(i.user.id, now + 15000);
+      aiCooldowns.set(i.user.id, Date.now() + 15000);
       await i.deferReply();
       try {
         const answer = await askNvidia(i.options.getString('question', true));
-        const maxLength = 1900;
-        const content = answer.length > maxLength
-          ? `${answer.slice(0, maxLength - 24)}\n\n…response shortened`
-          : answer;
-        return i.editReply({ content, allowedMentions: { parse: [] } });
+        return i.editReply({ content: aiResponseText(answer), allowedMentions: { parse: [] } });
       } catch (error) {
         console.error('NVIDIA AI request failed:', error.status || error.name || 'unknown error');
-        const message = error.status === 401 || error.status === 403
-          ? 'NVIDIA rejected the API key. Check `NVIDIA_API_KEY` in the bot environment.'
-          : error.status === 429
-            ? 'NVIDIA AI is busy or rate limited right now. Please try again later.'
-            : 'The AI could not respond right now. Please try again shortly.';
-        return i.editReply({ content: message, allowedMentions: { parse: [] } });
+        return i.editReply({ content: nvidiaFailureText(error), allowedMentions: { parse: [] } });
       }
     }
 
@@ -1793,7 +1880,7 @@ client.on('interactionCreate', async i => {
         .setDescription('Commands available in this Discord server.')
         .addFields(
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
-          { name: 'Community', value: '`/ask` · `/invites check` · `/invites leaderboard` · `/setup` · `/welcome panel` · `/leave panel` (welcome/leave setup is staff-only)' },
+          { name: 'Community', value: '`/setupsneakai` (staff setup) · `/ask` · `/invites check` · `/invites leaderboard` · `/setup` · `/welcome panel` · `/leave panel` (welcome/leave setup is staff-only)' },
           { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponder embed add/edit/list/remove` for embedded replies · use each set’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
         );
 
@@ -1869,6 +1956,63 @@ client.on('interactionCreate', async i => {
     });
   } catch (error) {
     await replyError(i, error);
+  }
+});
+
+client.on('interactionCreate', async i => {
+  if (!i.isButton() && !i.isChannelSelectMenu()) return;
+  if (!i.customId.startsWith('legacy_sneakai_')) return;
+  if (!i.guildId) return i.reply({ content: 'Use this inside a server.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  if (!isAdmin(i)) return i.reply({ content: 'Only server administrators can manage SneakAI setup.', flags: MessageFlags.Ephemeral }).catch(() => {});
+
+  try {
+    if (i.isButton() && i.customId === 'legacy_sneakai_requirements') {
+      return i.reply({ embeds: [await sneakaiRequirementsEmbed(i.guild)], flags: MessageFlags.Ephemeral });
+    }
+
+    if (i.isButton() && i.customId === 'legacy_sneakai_set_channel') {
+      const picker = new ChannelSelectMenuBuilder()
+        .setCustomId('legacy_sneakai_select_channel')
+        .setPlaceholder('Choose the SneakAI text channel')
+        .setChannelTypes(ChannelType.GuildText);
+      return i.update({
+        content: 'Choose the text channel where SneakAI should answer normal messages.',
+        embeds: [],
+        components: [
+          new ActionRowBuilder().addComponents(picker),
+          new ActionRowBuilder().addComponents(new ButtonBuilder()
+            .setCustomId('legacy_sneakai_back')
+            .setLabel('Back to Setup')
+            .setStyle(ButtonStyle.Secondary))
+        ]
+      });
+    }
+
+    if (i.isButton() && i.customId === 'legacy_sneakai_back') {
+      return i.update({
+        content: null,
+        embeds: [sneakaiPanelEmbed(i.guildId)],
+        components: sneakaiPanelComponents()
+      });
+    }
+
+    if (i.isChannelSelectMenu() && i.customId === 'legacy_sneakai_select_channel') {
+      const channelId = i.values[0];
+      if (!channelId) return i.reply({ content: 'Choose a text channel first.', flags: MessageFlags.Ephemeral });
+      getGuildCommunity(i.guildId).sneakai.channelId = channelId;
+      aiSetupWarnings.delete(`${i.guildId}:${channelId}`);
+      saveCommunitySettings();
+      return i.update({
+        content: `SneakAI will answer normal messages in <#${channelId}> only.`,
+        embeds: [sneakaiPanelEmbed(i.guildId)],
+        components: sneakaiPanelComponents()
+      });
+    }
+  } catch (error) {
+    console.error('SneakAI setup interaction failed:', error.message);
+    const response = { content: 'Could not update SneakAI setup. Reopen `/setupsneakai` and try again.', flags: MessageFlags.Ephemeral };
+    if (i.deferred || i.replied) return i.followUp(response).catch(() => {});
+    return i.reply(response).catch(() => {});
   }
 });
 
@@ -2384,6 +2528,44 @@ function triggerMatches(content, trigger, matchMode = 'contains') {
 
 client.on('messageCreate', async message => {
   if (message.author.bot || !message.guild) return;
+
+  const aiChannelId = getGuildCommunity(message.guild.id).sneakai.channelId;
+  if (aiChannelId && message.channelId === aiChannelId) {
+    if (!nvidiaApiKey) {
+      const warningKey = `${message.guild.id}:${aiChannelId}`;
+      if (!aiSetupWarnings.has(warningKey)) {
+        aiSetupWarnings.add(warningKey);
+        await message.reply({
+          content: 'SneakAI is not configured yet. Staff can use `/setupsneakai` → **Requirements** to see what is missing.',
+          allowedMentions: { parse: [] }
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    const question = message.content.trim();
+    if (!question) return;
+
+    const seconds = aiCooldownRemaining(message.author.id);
+    if (seconds > 0) {
+      await message.reply({
+        content: `Please wait ${seconds} second${seconds === 1 ? '' : 's'} before asking again.`,
+        allowedMentions: { parse: [] }
+      }).catch(() => {});
+      return;
+    }
+
+    aiCooldowns.set(message.author.id, Date.now() + 15000);
+    try {
+      await message.channel.sendTyping();
+      const answer = await askNvidia(question.slice(0, 1500));
+      await message.reply({ content: aiResponseText(answer), allowedMentions: { parse: [] } });
+    } catch (error) {
+      console.error('SneakAI message request failed:', error.status || error.name || 'unknown error');
+      await message.reply({ content: nvidiaFailureText(error), allowedMentions: { parse: [] } }).catch(() => {});
+    }
+    return;
+  }
 
   const matches = Object.entries(customMessages[message.guild.id] || {})
     .sort(([left], [right]) => right.length - left.length)
