@@ -68,13 +68,10 @@ Discord:
 - `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
-- `/autoresponder add trigger:<word or phrase> reply:<text> replytype:<optional embed|text> matchmode:<optional> title:<optional> color:<optional HEX>` — add an embedded or normal text auto-reply.
-- `/autoresponder editreply trigger:<trigger> reply:<new text> replytype:<optional embed|text>` — change a saved reply and optionally switch its message type. `/autoresponder editmatchmode trigger:<trigger> mode:<contains|exact|starts_with|ends_with>` — change how its trigger matches.
-- `/autoresponder show trigger:<trigger>` and `/autoresponder showraw trigger:<trigger>` — inspect a saved embed or its plain reply text.
-- `/autoresponder remove trigger:<trigger>` and `/autoresponder list` — manage saved replies. `/autoresponder delete` remains available as an alias for `remove`.
-- `/autoresponder edit` can also change the reply, trigger, type, title, or color. `/autoresponder help` shows options and examples; `/autoresponder panel` opens the visual editor. Up to 25 triggers are supported per server.
-
-The add, edit, and remove commands save immediately. Replies default to embeds; choose `replytype:text` for a normal message. Embed title and HEX color (for example, `#22C7D6`) apply to embed replies. `contains` is the default match mode and matches a complete word or phrase, ignoring case; `exact`, `starts_with`, and `ends_with` are also available. The panel lets admins edit reply type and embed title/message/color and requires clicking **Save Changes**. Run `npm run deploy` after updating the bot to register the command.
+- `/autoresponder add trigger:<word or phrase> reply:<text> matchmode:<optional>` — add a normal text auto-reply.
+- `/autoresponderembed add trigger:<word or phrase> reply:<text> matchmode:<optional> title:<optional> color:<optional HEX>` — add an embed containing only the optional custom title and reply text.
+- Both commands support `edit`, `editreply`, `editmatchmode`, `remove`, `delete`, `show`, `showraw`, `list`, `help`, and `panel`. Each command manages its own reply type and opens its own Add/Manage/List buttons.
+- The add, edit, and remove commands save immediately. The visual panel requires clicking **Save Changes**. `contains` is the default match mode and matches a complete word or phrase, ignoring case; `exact`, `starts_with`, and `ends_with` are also available. Up to 25 triggers are supported per server. Run `npm run deploy` after updating the bot to register both commands.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.

@@ -32,11 +32,6 @@ const matchModeChoices = [
   { name: 'Ends with', value: 'ends_with' }
 ];
 
-const replyTypeChoices = [
-  { name: 'Embedded message', value: 'embed' },
-  { name: 'Normal message', value: 'text' }
-];
-
 export const commands = [
   new SlashCommandBuilder()
     .setName('help')
@@ -218,12 +213,6 @@ export const commands = [
             .addChoices(...matchModeChoices)
         )
         .addStringOption(o =>
-          o.setName('replytype')
-            .setDescription('Send the reply as an embed or normal text')
-            .setRequired(false)
-            .addChoices(...replyTypeChoices)
-        )
-        .addStringOption(o =>
           o.setName('title')
             .setDescription('Optional title shown above the reply')
             .setRequired(false)
@@ -250,12 +239,6 @@ export const commands = [
             .setDescription('New reply text')
             .setRequired(true)
             .setMaxLength(2000)
-        )
-        .addStringOption(o =>
-          o.setName('replytype')
-            .setDescription('Send the reply as an embed or normal text')
-            .setRequired(false)
-            .addChoices(...replyTypeChoices)
         )
         .addStringOption(o =>
           o.setName('new-trigger')
@@ -290,12 +273,6 @@ export const commands = [
             .setDescription('New reply text')
             .setRequired(true)
             .setMaxLength(2000)
-        )
-        .addStringOption(o =>
-          o.setName('replytype')
-            .setDescription('Send the reply as an embed or normal text')
-            .setRequired(false)
-            .addChoices(...replyTypeChoices)
         )
     )
     .addSubcommand(s =>
@@ -367,3 +344,24 @@ export const commands = [
         .setDescription('Open the embed auto-reply editor')
     )
 ].map(command => command.toJSON());
+
+const autoReplyCommand = commands.find(command => command.name === 'autoresponder');
+const embedAutoReplyCommand = structuredClone(autoReplyCommand);
+embedAutoReplyCommand.name = 'autoresponderembed';
+embedAutoReplyCommand.description = 'Create and manage embedded keyword or phrase replies (admin only)';
+embedAutoReplyCommand.options.find(option => option.name === 'add').description = 'Add an embedded auto-reply';
+embedAutoReplyCommand.options.find(option => option.name === 'add').options.find(option => option.name === 'reply').description = 'Reply text shown inside the embed';
+embedAutoReplyCommand.options.find(option => option.name === 'panel').description = 'Open the embedded auto-reply editor';
+
+autoReplyCommand.description = 'Create and manage normal text keyword or phrase replies (admin only)';
+autoReplyCommand.options.find(option => option.name === 'add').description = 'Add a normal text auto-reply';
+autoReplyCommand.options.find(option => option.name === 'add').options.find(option => option.name === 'reply').description = 'Normal text sent as the reply';
+autoReplyCommand.options.find(option => option.name === 'panel').description = 'Open the normal text auto-reply editor';
+
+for (const subcommand of autoReplyCommand.options) {
+  if (['add', 'edit'].includes(subcommand.name)) {
+    subcommand.options = subcommand.options.filter(option => !['title', 'color'].includes(option.name));
+  }
+}
+
+commands.push(embedAutoReplyCommand);

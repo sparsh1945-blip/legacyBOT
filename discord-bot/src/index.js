@@ -180,13 +180,30 @@ function saveCustomMessages() {
   fs.renameSync(tempFile, customFile);
 }
 
-function saveGuildAutoReplies(guildId, messages) {
-  customMessages[guildId] = messages;
+function getGuildAutoReplies(guildId, replyType) {
+  return Object.fromEntries(
+    Object.entries(customMessages[guildId] || {})
+      .filter(([, item]) => (item.replyType || 'embed') === replyType)
+  );
+}
+
+function saveGuildAutoReplies(guildId, messages, replyType) {
+  const current = customMessages[guildId] || {};
+  const merged = Object.fromEntries(
+    Object.entries(current)
+      .filter(([, item]) => (item.replyType || 'embed') !== replyType)
+  );
+
+  for (const [trigger, item] of Object.entries(messages)) {
+    setAutoReply(merged, trigger, { ...item, replyType });
+  }
+
+  customMessages[guildId] = merged;
   saveCustomMessages();
 
   const draftPrefix = `${guildId}:`;
   for (const key of customDrafts.keys()) {
-    if (key.startsWith(draftPrefix)) {
+    if (key.startsWith(draftPrefix) && key.endsWith(`:${replyType}`)) {
       customDrafts.delete(key);
       customEditOrigins.delete(key);
     }
@@ -207,8 +224,6 @@ function validTrigger(trigger) {
 }
 
 const AUTO_REPLY_MATCH_MODES = new Set(['contains', 'exact', 'starts_with', 'ends_with']);
-const AUTO_REPLY_TYPES = new Set(['embed', 'text']);
-
 function matchModeLabel(mode) {
   return ({
     contains: 'Contains phrase',
@@ -216,10 +231,6 @@ function matchModeLabel(mode) {
     starts_with: 'Starts with',
     ends_with: 'Ends with'
   })[mode] || 'Contains phrase';
-}
-
-function replyTypeLabel(type) {
-  return type === 'text' ? 'Normal message' : 'Embedded message';
 }
 
 function normalizeHexColor(value, fallback = '22C7D6') {
@@ -247,17 +258,17 @@ function setAutoReply(messages, trigger, item) {
   });
 }
 
-function draftKey(i) {
-  return `${i.guildId}:${i.user.id}`;
+function draftKey(i, replyType = 'embed') {
+  return `${i.guildId}:${i.user.id}:${replyType}`;
 }
 
-function getDraft(i) {
-  const key = draftKey(i);
+function getDraft(i, replyType = 'embed') {
+  const key = draftKey(i, replyType);
 
   if (!customDrafts.has(key)) {
     customDrafts.set(
       key,
-      structuredClone(customMessages[i.guildId] || {})
+      structuredClone(getGuildAutoReplies(i.guildId, replyType))
     );
   }
 
@@ -267,12 +278,15 @@ function getDraft(i) {
 function customEmbed(item) {
   const hex = normalizeHexColor(item.color) || '22C7D6';
   const reply = item.reply || item.body || 'This auto-reply has no message yet.';
+  const title = (item.title || '').trim();
+  const isLegacyTitle = /^LEGACY MC\s*[•·-]\s*AUTO-REPLY$/iu.test(title);
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(parseInt(hex, 16))
-    .setTitle(item.title || '✨ Auto-Reply')
-    .setDescription(reply)
-    .addFields({ name: '🔑 Trigger', value: `\`${item.trigger || 'custom'}\``, inline: true });
+    .setDescription(reply);
+
+  if (title && !isLegacyTitle) embed.setTitle(title);
+  return embed;
 }
 
 function autoReplyPayload(item) {
@@ -285,35 +299,35 @@ function autoReplyPayload(item) {
   return { embeds: [customEmbed(item)] };
 }
 
-function customPanel(messages) {
+function customPanel(messages, replyType) {
   const entries = Object.entries(messages);
 
   const description = entries.length
-    ? entries.map(([key, item]) => `• **${key.slice(0, 80)}** — ${replyTypeLabel(item.replyType || 'embed')} — ${(item.reply || item.body || item.title || 'Reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
+    ? entries.map(([key, item]) => `• **${key.slice(0, 80)}** — ${(item.reply || item.body || item.title || 'Reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
     : 'No auto-replies in this draft. Select Add Reply to create one.';
 
   return new EmbedBuilder()
     .setColor(0x22c7d6)
-    .setAuthor({ name: 'LEGACY MC • SERVER TOOLS' })
-    .setTitle('✨ Auto-Responder Studio')
+    .setTitle(replyType === 'text' ? 'Auto-Responder · Normal Replies' : 'Auto-Responder · Embedded Replies')
     .setDescription(description)
     .setFooter({ text: 'Save changes to activate your word and phrase replies.' })
     .setTimestamp();
 }
 
-function customButtons(messages) {
+function customButtons(messages, replyType) {
+  const id = action => `legacy_custom_${replyType}_${action}`;
   const rows = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId('legacy_custom_add')
+        .setCustomId(id('add'))
         .setLabel('Add Reply')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId('legacy_custom_edit')
+        .setCustomId(id('edit'))
         .setLabel('Edit Reply')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId('legacy_custom_save')
+        .setCustomId(id('save'))
         .setLabel('Save Changes')
         .setStyle(ButtonStyle.Success)
     )
@@ -323,7 +337,7 @@ function customButtons(messages) {
     rows.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId('legacy_custom_delete')
+          .setCustomId(id('delete'))
           .setLabel('Delete Reply')
           .setStyle(ButtonStyle.Danger)
       )
@@ -348,7 +362,7 @@ function customSelect(messages, customId) {
   );
 }
 
-function customModal(customId, item = {}) {
+function customModal(customId, item = {}, replyType = 'embed') {
   const modal = new ModalBuilder()
     .setCustomId(customId)
     .setTitle(item.trigger ? 'Edit Auto-Reply' : 'Add Auto-Reply');
@@ -361,46 +375,39 @@ function customModal(customId, item = {}) {
     .setRequired(true)
     .setValue(item.trigger || '');
 
-  const title = new TextInputBuilder()
-    .setCustomId('title')
-    .setLabel('Embed title')
-    .setStyle(TextInputStyle.Short)
-    .setMaxLength(256)
-    .setRequired(true)
-    .setValue(item.title || 'Auto-Reply');
-
   const body = new TextInputBuilder()
     .setCustomId('body')
-    .setLabel('Embed message')
+    .setLabel(replyType === 'text' ? 'Normal message' : 'Embed reply text')
     .setStyle(TextInputStyle.Paragraph)
-    .setMaxLength(3500)
+    .setMaxLength(replyType === 'text' ? 2000 : 3500)
     .setRequired(true)
     .setValue(item.body || item.reply || 'Your automatic reply goes here.');
 
-  const color = new TextInputBuilder()
-    .setCustomId('color')
-    .setLabel('HEX color without #, e.g. 22C7D6')
-    .setStyle(TextInputStyle.Short)
-    .setMaxLength(6)
-    .setRequired(true)
-    .setValue(item.color || '22C7D6');
+  modal.addComponents(new ActionRowBuilder().addComponents(trigger));
 
-  const replyType = new TextInputBuilder()
-    .setCustomId('replytype')
-    .setLabel('Reply type: embed or text')
-    .setStyle(TextInputStyle.Short)
-    .setMaxLength(5)
-    .setRequired(true)
-    .setPlaceholder('embed or text')
-    .setValue(item.replyType || 'embed');
+  if (replyType === 'embed') {
+    const title = new TextInputBuilder()
+      .setCustomId('title')
+      .setLabel('Embed title')
+      .setStyle(TextInputStyle.Short)
+      .setMaxLength(256)
+      .setRequired(false);
+    if (item.title) title.setValue(item.title);
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(trigger),
-    new ActionRowBuilder().addComponents(title),
-    new ActionRowBuilder().addComponents(body),
-    new ActionRowBuilder().addComponents(color),
-    new ActionRowBuilder().addComponents(replyType)
-  );
+    const color = new TextInputBuilder()
+      .setCustomId('color')
+      .setLabel('HEX color without #, e.g. 22C7D6')
+      .setStyle(TextInputStyle.Short)
+      .setMaxLength(6)
+      .setRequired(true)
+      .setValue(item.color || '22C7D6');
+
+    modal.addComponents(new ActionRowBuilder().addComponents(title));
+    modal.addComponents(new ActionRowBuilder().addComponents(body));
+    modal.addComponents(new ActionRowBuilder().addComponents(color));
+  } else {
+    modal.addComponents(new ActionRowBuilder().addComponents(body));
+  }
 
   return modal;
 }
@@ -419,29 +426,31 @@ client.on('interactionCreate', async i => {
   const command = i.commandName;
 
   try {
-    if (command === 'autoresponder') {
+    if (command === 'autoresponder' || command === 'autoresponderembed') {
       if (!isAdmin(i)) return deny(i);
       if (!i.guildId) return deny(i, 'Use this command inside a server.');
 
+      const replyType = command === 'autoresponderembed' ? 'embed' : 'text';
+      const commandRoot = `/${command}`;
       const action = i.options.getSubcommand(false);
       if (!action) {
         return i.reply({
           embeds: [autoResponderNotice(
-            '✨ Auto-Responder Controls',
-            'Choose an action below: **Add** opens a form, **Manage** lets you edit or remove replies, and **List** shows what is configured. You can also use `/autoresponder add` and the other subcommands from Discord’s command picker.'
+            replyType === 'text' ? 'Auto-Responder · Normal Replies' : 'Auto-Responder · Embedded Replies',
+            `Choose an action below: **Add** opens a form, **Manage** lets you edit or remove replies, and **List** shows what is configured. You can also use \`${commandRoot} add\` and the other subcommands from Discord’s command picker.`
           )],
           components: [
             new ActionRowBuilder().addComponents(
               new ButtonBuilder()
-                .setCustomId('legacy_custom_start_add')
+                .setCustomId(`legacy_custom_${replyType}_start_add`)
                 .setLabel('Add reply')
                 .setStyle(ButtonStyle.Success),
               new ButtonBuilder()
-                .setCustomId('legacy_custom_open_manager')
+                .setCustomId(`legacy_custom_${replyType}_open_manager`)
                 .setLabel('Manage replies')
                 .setStyle(ButtonStyle.Primary),
               new ButtonBuilder()
-                .setCustomId('legacy_custom_show_list')
+                .setCustomId(`legacy_custom_${replyType}_show_list`)
                 .setLabel('List replies')
                 .setStyle(ButtonStyle.Secondary)
             )
@@ -449,13 +458,13 @@ client.on('interactionCreate', async i => {
           flags: MessageFlags.Ephemeral
         });
       }
-      const guildMessages = customMessages[i.guildId] || {};
+      const guildMessages = getGuildAutoReplies(i.guildId, replyType);
 
       if (action === 'panel') {
-        const messages = getDraft(i);
+        const messages = getDraft(i, replyType);
         return i.reply({
-          embeds: [customPanel(messages)],
-          components: customButtons(messages),
+          embeds: [customPanel(messages, replyType)],
+          components: customButtons(messages, replyType),
           flags: MessageFlags.Ephemeral
         });
       }
@@ -464,36 +473,39 @@ client.on('interactionCreate', async i => {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
         const reply = i.options.getString('reply').trim();
         const matchMode = i.options.getString('matchmode') || 'contains';
-        const replyType = i.options.getString('replytype') || 'embed';
-        const title = i.options.getString('title')?.trim() || '✨ Auto-Reply';
-        const color = normalizeHexColor(i.options.getString('color'));
+        const title = replyType === 'embed'
+          ? i.options.getString('title')?.trim() || null
+          : null;
+        const color = replyType === 'embed'
+          ? normalizeHexColor(i.options.getString('color'))
+          : null;
 
-        if (!validTrigger(trigger) || !reply || !AUTO_REPLY_MATCH_MODES.has(matchMode) || !AUTO_REPLY_TYPES.has(replyType)) {
+        if (!validTrigger(trigger) || !reply || !AUTO_REPLY_MATCH_MODES.has(matchMode)) {
           return i.reply({
             embeds: [autoResponderNotice(
               '⚠️ Check Your Auto-Reply',
-              'Enter a trigger word or phrase, a non-empty reply, and a supported match mode and reply type.',
+              'Enter a trigger word or phrase, a non-empty reply, and a supported match mode.',
               0xe74c3c
             )],
             flags: MessageFlags.Ephemeral
           });
         }
 
-        if (!color) {
+        if (replyType === 'embed' && !color) {
           return i.reply({
             embeds: [autoResponderNotice('🎨 Invalid HEX Color', 'Use six HEX digits, such as `#22C7D6`.', 0xe74c3c)],
             flags: MessageFlags.Ephemeral
           });
         }
 
-        if (Object.hasOwn(guildMessages, trigger)) {
+        if (Object.hasOwn(customMessages[i.guildId] || {}, trigger)) {
           return i.reply({
-            embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured. Use the edit subcommand to change it.`, 0xf39c12)],
+            embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured. Use the matching autoresponder command to edit it.`, 0xf39c12)],
             flags: MessageFlags.Ephemeral
           });
         }
 
-        if (Object.keys(guildMessages).length >= 25) {
+        if (Object.keys(customMessages[i.guildId] || {}).length >= 25) {
           return i.reply({
             embeds: [autoResponderNotice('📚 Auto-Reply Limit Reached', 'This server can have up to **25** auto-replies.', 0xf39c12)],
             flags: MessageFlags.Ephemeral
@@ -501,13 +513,13 @@ client.on('interactionCreate', async i => {
         }
 
         setAutoReply(guildMessages, trigger, { trigger, reply, title, color, matchMode, replyType });
-        saveGuildAutoReplies(i.guildId, guildMessages);
+        saveGuildAutoReplies(i.guildId, guildMessages, replyType);
 
         return i.reply({
           embeds: [autoResponderNotice(
             '✅ Auto-Reply Added',
-            `**Trigger:** \`${trigger}\`\n**Match mode:** ${matchModeLabel(matchMode)}\n**Reply type:** ${replyTypeLabel(replyType)}\n**Reply:** ${reply.slice(0, 500)}\n${replyType === 'embed' ? `**Appearance:** ${title} · \`#${color}\`\n` : ''}\nIt is active now.`,
-            parseInt(color, 16)
+            `**Trigger:** \`${trigger}\`\n**Match mode:** ${matchModeLabel(matchMode)}\n**Reply:** ${reply.slice(0, 500)}${replyType === 'embed' ? `\n**Appearance:** ${title} · \`#${color}\`` : ''}\n\nIt is active now.`,
+            color ? parseInt(color, 16) : 0x22c7d6
           )],
           flags: MessageFlags.Ephemeral
         });
@@ -532,18 +544,21 @@ client.on('interactionCreate', async i => {
           });
         }
 
-        const title = i.options.getString('title')?.trim() || existing.title || '✨ Auto-Reply';
-        const color = normalizeHexColor(i.options.getString('color'), existing.color || '22C7D6');
-        const replyType = i.options.getString('replytype') || existing.replyType || 'embed';
+        const title = replyType === 'embed'
+          ? i.options.getString('title')?.trim() || existing.title || null
+          : existing.title;
+        const color = replyType === 'embed'
+          ? normalizeHexColor(i.options.getString('color'), existing.color || '22C7D6')
+          : existing.color;
 
-        if (!color || !AUTO_REPLY_TYPES.has(replyType)) {
+        if (replyType === 'embed' && !color) {
           return i.reply({
-            embeds: [autoResponderNotice('⚠️ Invalid Reply Settings', 'Choose a valid reply type and use a six-digit HEX color such as `#22C7D6`.', 0xe74c3c)],
+            embeds: [autoResponderNotice('⚠️ Invalid Embed Color', 'Use a six-digit HEX color such as `#22C7D6`.', 0xe74c3c)],
             flags: MessageFlags.Ephemeral
           });
         }
 
-        if (trigger !== currentTrigger && Object.hasOwn(guildMessages, trigger)) {
+        if (trigger !== currentTrigger && Object.hasOwn(customMessages[i.guildId] || {}, trigger)) {
           return i.reply({
             embeds: [autoResponderNotice('⚠️ Trigger Already Exists', `**${trigger}** is already configured.`, 0xf39c12)],
             flags: MessageFlags.Ephemeral
@@ -561,10 +576,10 @@ client.on('interactionCreate', async i => {
           replyType,
           matchMode: existing.matchMode || 'contains'
         });
-        saveGuildAutoReplies(i.guildId, guildMessages);
+        saveGuildAutoReplies(i.guildId, guildMessages, replyType);
 
         return i.reply({
-          embeds: [autoResponderNotice('✏️ Auto-Reply Updated', `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 500)}\n**Appearance:** ${title} · \`#${color}\``, parseInt(color, 16))],
+          embeds: [autoResponderNotice('✏️ Auto-Reply Updated', `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 500)}${replyType === 'embed' ? `\n**Appearance:** ${title} · \`#${color}\`` : ''}`, color ? parseInt(color, 16) : 0x22c7d6)],
           flags: MessageFlags.Ephemeral
         });
       }
@@ -584,19 +599,14 @@ client.on('interactionCreate', async i => {
           return i.reply({ content: 'Enter a non-empty reply.', flags: MessageFlags.Ephemeral });
         }
 
-        const replyType = i.options.getString('replytype') || existing.replyType || 'embed';
-        if (!AUTO_REPLY_TYPES.has(replyType)) {
-          return i.reply({ content: 'Choose either an embedded or normal text reply.', flags: MessageFlags.Ephemeral });
-        }
-
         setAutoReply(guildMessages, trigger, { ...existing, trigger, reply, body: reply, replyType });
-        saveGuildAutoReplies(i.guildId, guildMessages);
+        saveGuildAutoReplies(i.guildId, guildMessages, replyType);
 
         return i.reply({
           embeds: [autoResponderNotice(
             '✏️ Auto-Reply Updated',
-            `**Trigger:** \`${trigger}\`\n**Reply type:** ${replyTypeLabel(replyType)}\n**Reply:** ${reply.slice(0, 1000)}`,
-            parseInt(normalizeHexColor(existing.color) || '22C7D6', 16)
+            `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 1000)}`,
+            existing.color ? parseInt(normalizeHexColor(existing.color) || '22C7D6', 16) : 0x22c7d6
           )],
           flags: MessageFlags.Ephemeral
         });
@@ -618,7 +628,7 @@ client.on('interactionCreate', async i => {
         }
 
         setAutoReply(guildMessages, trigger, { ...existing, trigger, matchMode });
-        saveGuildAutoReplies(i.guildId, guildMessages);
+        saveGuildAutoReplies(i.guildId, guildMessages, replyType);
 
         return i.reply({
           embeds: [autoResponderNotice(
@@ -641,7 +651,7 @@ client.on('interactionCreate', async i => {
         }
 
         delete guildMessages[trigger];
-        saveGuildAutoReplies(i.guildId, guildMessages);
+        saveGuildAutoReplies(i.guildId, guildMessages, replyType);
         return i.reply({
           embeds: [autoResponderNotice('🗑️ Auto-Reply Deleted', `The trigger **${trigger}** has been removed.`, 0xe74c3c)],
           flags: MessageFlags.Ephemeral
@@ -666,21 +676,8 @@ client.on('interactionCreate', async i => {
           return i.reply({ content: reply.slice(0, 2000), flags: MessageFlags.Ephemeral });
         }
 
-        const color = normalizeHexColor(item.color) || '22C7D6';
         return i.reply({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(parseInt(color, 16))
-              .setTitle(item.title || '✨ Auto-Reply')
-              .setDescription(reply.slice(0, 4000))
-              .addFields(
-                { name: 'Trigger', value: trigger.slice(0, 100), inline: true },
-                { name: 'Reply type', value: replyTypeLabel(item.replyType || 'embed'), inline: true },
-                { name: 'Match mode', value: matchModeLabel(item.matchMode || 'contains'), inline: true },
-                { name: 'Embed color', value: `#${color}`, inline: true }
-              )
-              .setTimestamp()
-          ],
+          ...autoReplyPayload(item),
           flags: MessageFlags.Ephemeral
         });
       }
@@ -688,17 +685,17 @@ client.on('interactionCreate', async i => {
       if (action === 'list') {
         const entries = Object.entries(guildMessages);
         const embed = autoResponderNotice(
-          '💬 Auto-Reply Library',
+          replyType === 'text' ? 'Normal Auto-Reply Library' : 'Embedded Auto-Reply Library',
           entries.length
             ? `**${entries.length}/25** replies are active. Each reply uses its selected match mode.`
-            : 'No auto-replies are configured yet. Use `/autoresponder add` to create one.'
+            : `No auto-replies are configured yet. Use \`${commandRoot} add\` to create one.`
         );
 
         for (const [trigger, item] of entries) {
           const reply = (item.reply || item.body || 'No reply text').replace(/\s+/gu, ' ');
           embed.addFields({
             name: `🔑 ${trigger}`.slice(0, 256),
-            value: `📨 ${replyTypeLabel(item.replyType || 'embed')}\n🎯 ${matchModeLabel(item.matchMode || 'contains')}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}${item.replyType === 'text' ? '' : `\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\``}`,
+            value: `🎯 ${matchModeLabel(item.matchMode || 'contains')}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}${replyType === 'embed' ? `\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\`` : ''}`,
             inline: true
           });
         }
@@ -714,23 +711,25 @@ client.on('interactionCreate', async i => {
           .setColor(0x8e44ad)
           .setAuthor({ name: 'LEGACY MC • COMMAND GUIDE' })
           .setTitle('✨ Auto-Responder Help')
-          .setDescription('Build colorful automatic replies for words or phrases your community uses.')
+          .setDescription(replyType === 'text'
+            ? 'Build normal text replies for words or phrases your community uses.'
+            : 'Build embedded replies with a custom title and message.')
           .addFields(
             {
               name: '➕ Add a reply',
-              value: '`/autoresponder add`\n**Required:** `trigger`, `reply`\n**Optional:** `replytype` (`embed` or `text`), `matchmode`, `title`, `color`'
+              value: `\`${commandRoot} add\`\n**Required:** \`trigger\`, \`reply\`\n**Optional:** \`matchmode\`${replyType === 'embed' ? ', `title`, `color`' : ''}`
             },
             {
               name: '✏️ Edit a reply',
-              value: '`/autoresponder editreply` changes the reply and can switch between embed and text.\n`/autoresponder edit` can also rename the trigger or change type, title, and color.'
+              value: `\`${commandRoot} editreply\` changes the reply. \`${commandRoot} edit\` can also rename the trigger.${replyType === 'embed' ? ' It can also change the title and color.' : ''}`
             },
             {
               name: '🧰 More options',
-              value: '`/autoresponder editreply` changes reply text.\n`/autoresponder editmatchmode` changes matching.\n`/autoresponder remove` deletes a trigger.\n`/autoresponder show` and `showraw` inspect a reply.\n`/autoresponder list` lists replies; `panel` opens the embed editor.'
+              value: `\`${commandRoot} editmatchmode\` changes matching.\n\`${commandRoot} remove\` deletes a trigger.\n\`${commandRoot} show\` and \`showraw\` inspect a reply.\n\`${commandRoot} list\` lists replies; \`panel\` opens the editor.`
             },
             {
-              name: '🎨 Example',
-              value: '`trigger: server ip`\n`reply: Java: play.example.net`\n`title: Join our server`\n`color: #22C7D6`'
+              name: replyType === 'embed' ? '🎨 Example' : '💬 Example',
+              value: `\`trigger: server ip\`\n\`reply: Java: play.example.net\`${replyType === 'embed' ? '\n`title: Join our server`\n`color: #22C7D6`' : ''}`
             },
             {
               name: '💡 Trigger matching',
@@ -784,7 +783,7 @@ client.on('interactionCreate', async i => {
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
-          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add` · `/autoresponder editreply` · `/autoresponder editmatchmode` · `/autoresponder list` · `/autoresponder remove` · `/autoresponder show` · `/autoresponder showraw` · `/autoresponder panel`' }
+          { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponderembed add/edit/list/remove` for embedded replies · use each command’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
         );
 
       return i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
@@ -1044,6 +1043,15 @@ client.on('interactionCreate', async i => {
 
 // Custom message buttons, select menus and modals
 
+function parseCustomAction(customId) {
+  const match = customId.match(/^legacy_custom_(?:(embed|text)_)?(.+)$/);
+  return { replyType: match?.[1] || 'embed', action: match?.[2] || '' };
+}
+
+function customActionId(replyType, action) {
+  return `legacy_custom_${replyType}_${action}`;
+}
+
 client.on('interactionCreate', async i => {
   if (!i.isButton() && !i.isStringSelectMenu() && !i.isModalSubmit()) return;
   if (!i.customId.startsWith('legacy_custom_')) return;
@@ -1057,59 +1065,60 @@ client.on('interactionCreate', async i => {
   }
 
   try {
-    const messages = getDraft(i);
-    const key = draftKey(i);
+    const { replyType, action } = parseCustomAction(i.customId);
+    const messages = getDraft(i, replyType);
+    const key = draftKey(i, replyType);
 
     if (i.isButton()) {
-      if (i.customId === 'legacy_custom_start_add') {
+      if (action === 'start_add') {
         customEditOrigins.delete(key);
-        return i.showModal(customModal('legacy_custom_modal_quick_add'));
+        return i.showModal(customModal(customActionId(replyType, 'modal_quick_add'), {}, replyType));
       }
 
-      if (i.customId === 'legacy_custom_open_manager') {
+      if (action === 'open_manager') {
         return i.update({
           content: null,
-          embeds: [customPanel(messages)],
-          components: customButtons(messages)
+          embeds: [customPanel(messages, replyType)],
+          components: customButtons(messages, replyType)
         });
       }
 
-      if (i.customId === 'legacy_custom_show_list') {
+      if (action === 'show_list') {
+        const saved = getGuildAutoReplies(i.guildId, replyType);
         return i.update({
           content: null,
-          embeds: [customPanel(customMessages[i.guildId] || {})],
+          embeds: [customPanel(saved, replyType)],
           components: []
         });
       }
 
-      if (i.customId === 'legacy_custom_add') {
+      if (action === 'add') {
         customEditOrigins.delete(key);
-        return i.showModal(customModal('legacy_custom_modal_add'));
+        return i.showModal(customModal(customActionId(replyType, 'modal_add'), {}, replyType));
       }
 
-      if (i.customId === 'legacy_custom_edit' || i.customId === 'legacy_custom_delete') {
+      if (action === 'edit' || action === 'delete') {
         if (!Object.keys(messages).length) {
           return i.reply({ content: 'There are no messages to select yet.', flags: MessageFlags.Ephemeral });
         }
 
-        const deleting = i.customId === 'legacy_custom_delete';
+        const deleting = action === 'delete';
         return i.update({
-          embeds: [customPanel(messages)],
+          embeds: [customPanel(messages, replyType)],
           components: [
-            customSelect(messages, deleting ? 'legacy_custom_pick_delete' : 'legacy_custom_pick_edit'),
-            ...customButtons(messages)
+            customSelect(messages, customActionId(replyType, deleting ? 'pick_delete' : 'pick_edit')),
+            ...customButtons(messages, replyType)
           ]
         });
       }
 
-      if (i.customId === 'legacy_custom_save') {
-        customMessages[i.guildId] = structuredClone(messages);
-        saveCustomMessages();
-        customDrafts.delete(key);
+      if (action === 'save') {
+        saveGuildAutoReplies(i.guildId, messages, replyType);
+        const saved = getGuildAutoReplies(i.guildId, replyType);
 
         return i.update({
-          embeds: [customPanel(customMessages[i.guildId])],
-          components: customButtons(customMessages[i.guildId])
+          embeds: [customPanel(saved, replyType)],
+          components: customButtons(saved, replyType)
         });
       }
     }
@@ -1117,7 +1126,7 @@ client.on('interactionCreate', async i => {
     if (i.isStringSelectMenu()) {
       const selected = i.values[0];
 
-      if (i.customId === 'legacy_custom_pick_edit') {
+      if (action === 'pick_edit') {
         const item = messages[selected];
         if (!item) {
           return i.reply({ content: 'That draft entry no longer exists.', flags: MessageFlags.Ephemeral });
@@ -1125,14 +1134,14 @@ client.on('interactionCreate', async i => {
 
         customEditOrigins.set(key, selected);
         return i.showModal(
-          customModal('legacy_custom_modal_edit', {
+          customModal(customActionId(replyType, 'modal_edit'), {
             ...item,
             trigger: selected
-          })
+          }, replyType)
         );
       }
 
-      if (i.customId === 'legacy_custom_pick_delete') {
+      if (action === 'pick_delete') {
         if (!messages[selected]) {
           return i.reply({ content: 'That draft entry no longer exists.', flags: MessageFlags.Ephemeral });
         }
@@ -1141,21 +1150,24 @@ client.on('interactionCreate', async i => {
 
         return i.update({
           content: `Removed **${selected}** from this draft. Click Save Changes to apply it.`,
-          embeds: [customPanel(messages)],
-          components: customButtons(messages)
+          embeds: [customPanel(messages, replyType)],
+          components: customButtons(messages, replyType)
         });
       }
     }
 
     if (i.isModalSubmit()) {
-      const modalMessages = i.customId === 'legacy_custom_modal_quick_add'
-        ? structuredClone(customMessages[i.guildId] || {})
+      const isQuickAdd = action === 'modal_quick_add';
+      const isEdit = action === 'modal_edit';
+      const modalMessages = isQuickAdd
+        ? structuredClone(getGuildAutoReplies(i.guildId, replyType))
         : messages;
       const trigger = normalizeTrigger(i.fields.getTextInputValue('trigger'));
-      const title = i.fields.getTextInputValue('title').trim();
       const body = i.fields.getTextInputValue('body').trim();
-      const color = i.fields.getTextInputValue('color').trim().replace(/^#/, '');
-      const replyType = i.fields.getTextInputValue('replytype').trim().toLowerCase();
+      const title = replyType === 'embed' ? i.fields.getTextInputValue('title').trim() || null : null;
+      const color = replyType === 'embed'
+        ? i.fields.getTextInputValue('color').trim().replace(/^#/, '')
+        : null;
 
       if (!validTrigger(trigger)) {
         return i.reply({
@@ -1164,22 +1176,18 @@ client.on('interactionCreate', async i => {
         });
       }
 
-      if (
-        !title ||
-        !body ||
-        !/^[0-9a-f]{6}$/i.test(color) ||
-        !AUTO_REPLY_TYPES.has(replyType) ||
-        (replyType === 'text' && body.length > 2000)
-      ) {
+      if (!body || (replyType === 'embed' && !/^[0-9a-f]{6}$/i.test(color))) {
         return i.reply({
-          content: 'Enter a title, message, valid six-digit HEX color, and reply type (`embed` or `text`). Normal text replies must be 2,000 characters or fewer.',
+          content: replyType === 'embed'
+            ? 'Enter reply text and a valid six-digit HEX color. The title is optional.'
+            : 'Enter a non-empty normal message up to 2,000 characters.',
           flags: MessageFlags.Ephemeral
         });
       }
 
       let oldTrigger = null;
 
-      if (i.customId === 'legacy_custom_modal_edit') {
+      if (isEdit) {
         oldTrigger = customEditOrigins.get(key) || null;
         customEditOrigins.delete(key);
       }
@@ -1188,14 +1196,14 @@ client.on('interactionCreate', async i => {
         ? modalMessages[oldTrigger]?.matchMode || 'contains'
         : 'contains';
 
-      if (Object.hasOwn(modalMessages, trigger) && trigger !== oldTrigger) {
+      if (Object.hasOwn(customMessages[i.guildId] || {}, trigger) && trigger !== oldTrigger) {
         return i.reply({
           content: `The trigger **${trigger}** already exists. Choose a different one.`,
           flags: MessageFlags.Ephemeral
         });
       }
 
-      if (!oldTrigger && Object.keys(modalMessages).length >= 25) {
+      if (!oldTrigger && Object.keys(customMessages[i.guildId] || {}).length >= 25) {
         return i.reply({
           content: 'This server has reached the 25 auto-reply limit.',
           flags: MessageFlags.Ephemeral
@@ -1210,13 +1218,13 @@ client.on('interactionCreate', async i => {
         trigger,
         title,
         body,
-        color: color.toUpperCase(),
+        color: color?.toUpperCase() || null,
         replyType,
         matchMode
       });
 
-      if (i.customId === 'legacy_custom_modal_quick_add') {
-        saveGuildAutoReplies(i.guildId, modalMessages);
+      if (isQuickAdd) {
+        saveGuildAutoReplies(i.guildId, modalMessages, replyType);
         return i.reply({
           content: `Added **${trigger}** and activated its auto-reply.`,
           flags: MessageFlags.Ephemeral
@@ -1232,7 +1240,7 @@ client.on('interactionCreate', async i => {
     console.error('Custom message interaction failed:', error);
 
     const payload = {
-      content: 'Could not process that action. Try `/autoresponder panel` again.',
+      content: 'Could not process that action. Reopen the matching autoresponder panel and try again.',
       flags: MessageFlags.Ephemeral
     };
 
