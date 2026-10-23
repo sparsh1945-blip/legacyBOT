@@ -18,7 +18,7 @@ For offline/cracked servers, UUIDs can be impersonated unless the server/proxy a
 - Paper 1.21.11
 - Vault + a compatible economy plugin (EssentialsX Economy is common)
 - Node.js 20+
-- Discord bot application with `applications.commands` and `bot` scopes; invite with Send Messages, Embed Links, Use Application Commands permissions. Enable the Message Content privileged intent in the Discord Developer Portal so auto-replies can read messages.
+- Discord bot application with `applications.commands` and `bot` scopes; invite with Send Messages, Embed Links, Use Application Commands permissions. Enable the Message Content privileged intent in the Discord Developer Portal so auto-replies can read messages, and the Server Members Intent for welcome/leave events. Invite attribution needs Manage Server so Discord includes invite usage metadata; View Audit Log alone does not include the usage counts this tracker needs.
 
 ## 1. Build the plugin
 From `minecraft-plugin/`:
@@ -68,10 +68,18 @@ Discord:
 - `/minetempban player:<Minecraft username> hours:<number> reason:<text>`
 - `/mineunban player:<Minecraft username> reason:<text>`
 - `/minestatus`
+- `/welcome set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member join embed (staff only).
+- `/leave set channel:<channel> message:<text> title:<optional> image_url:<optional> color:<optional> emoji:<optional>` — configure the member leave embed (staff only).
+- `/welcome test|show|disable` and `/leave test|show|disable` — preview, inspect, or turn off each embed (staff only).
+- `/invites check user:<optional member>` — show total joins, active invited members, and departures; available to everyone.
+- `/invites leaderboard` — show the top inviters by active members; available to everyone.
+- `/invites logchannel channel:<channel>` — configure join attribution logs (staff only).
 - `/autoresponder add trigger:<word or phrase> reply:<text> matchmode:<optional>` — add a normal text auto-reply.
 - `/autoresponder embed add trigger:<word or phrase> reply:<text> matchmode:<optional> title:<optional> color:<optional HEX>` — add an embed containing only the optional custom title and reply text.
 - Both command paths support `edit`, `editreply`, `editmatchmode`, `remove`, `delete`, `show`, `showraw`, `list`, `help`, and `panel`. Each path manages its own reply type and provides Add/Manage/List buttons.
 - `/autoresponder help` is available to everyone. All other autoresponder actions are restricted to staff. Add/edit/remove save immediately; the visual panel requires clicking **Save Changes**. `contains` is the default match mode; `exact`, `starts_with`, and `ends_with` are also available. Up to 25 triggers are supported per server. Run `npm run deploy` after updating the bot to register the command changes.
+
+Welcome and leave message templates accept `{username}`, `{displayname}`, `{mention}`, `{server}`, `{member_count}`, `{inviter}`, `{invites}`, `{active_invites}`, `{emoji}`, and `{avatar}`. Type Discord custom emoji markup (including animated emoji markup) directly in the message or title, or set `emoji` and use `{emoji}`. `image_url` accepts a direct HTTP(S) image URL, including a Discord CDN upload link. Invite counts start when the bot is installed and has invite access; earlier joins cannot be recovered. If invite access is unavailable or a member uses an untracked link, the join is counted as unattributed.
 
 ## Permission configuration
 In `discord-bot/.env`, set `OWNER_IDS`, `DEVELOPER_IDS`, `ADMIN_ROLE_IDS` as comma-separated Discord IDs.
@@ -79,6 +87,7 @@ Owner/developer/admin are checked for coin commands; owner/developer/admin for b
 
 ## Data and limitations
 - API JSON storage is single-instance local file storage. Do not run multiple API instances against the same data directory.
+- Welcome/leave configuration and invite history are stored in `discord-bot/data/community-settings.json`; keep this file with the bot's data when moving the service.
 - Minecraft kills/deaths/playtime are recorded by this plugin for events observed after installation. It does not retroactively reconstruct past playtime/kills.
 - Money is read via Vault when a player is online; offline money depends on the economy provider and is marked unavailable if not supported.
 - This starter's moderation API queue is a framework; production use should add command acknowledgement polling, robust queue recovery, and test against your exact LiteBans version before using bans on a live server.

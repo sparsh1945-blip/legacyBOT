@@ -33,6 +33,8 @@ if (!token || !apiToken) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildInvites,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent
   ]
@@ -158,6 +160,7 @@ async function replyError(i, error) {
 
 const customDir = path.resolve('data');
 const customFile = path.join(customDir, 'custom-messages.json');
+const communityFile = path.join(customDir, 'community-settings.json');
 
 fs.mkdirSync(customDir, { recursive: true });
 
@@ -168,6 +171,45 @@ function loadCustomMessages() {
   } catch {
     return {};
   }
+}
+
+function loadCommunitySettings() {
+  try {
+    const data = JSON.parse(fs.readFileSync(communityFile, 'utf8'));
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+let communitySettings = loadCommunitySettings();
+
+function saveCommunitySettings() {
+  const tempFile = `${communityFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(communitySettings, null, 2));
+  fs.renameSync(tempFile, communityFile);
+}
+
+function getGuildCommunity(guildId) {
+  if (!communitySettings[guildId] || typeof communitySettings[guildId] !== 'object') {
+    communitySettings[guildId] = {};
+  }
+
+  const settings = communitySettings[guildId];
+  if (!settings.invites || typeof settings.invites !== 'object') {
+    settings.invites = { logChannelId: null, totals: {}, invitees: {}, unattributedJoins: 0 };
+  }
+  settings.invites.totals ||= {};
+  settings.invites.invitees ||= {};
+  settings.invites.unattributedJoins ||= 0;
+  return settings;
+}
+
+function getInviteCounts(guildId, inviterId) {
+  const totals = getGuildCommunity(guildId).invites.totals[inviterId] || {};
+  const joins = Number(totals.joins || 0);
+  const leaves = Number(totals.leaves || 0);
+  return { joins, leaves, active: Math.max(0, joins - leaves) };
 }
 
 let customMessages = loadCustomMessages();
@@ -412,10 +454,338 @@ function customModal(customId, item = {}, replyType = 'embed') {
   return modal;
 }
 
+const inviteSnapshots = new Map();
+const inviteQueues = new Map();
+const pendingInviteUses = new Map();
+
+function claimPendingInvite(guildId) {
+  const cutoff = Date.now() - 30_000;
+  const pending = (pendingInviteUses.get(guildId) || [])
+    .filter(item => item.detectedAt >= cutoff);
+  const attribution = pending.shift() || null;
+
+  if (pending.length) pendingInviteUses.set(guildId, pending);
+  else pendingInviteUses.delete(guildId);
+
+  return attribution;
+}
+
+async function readInviteSnapshot(guild) {
+  const invites = await guild.invites.fetch({ cache: false });
+  const inviteList = [...invites.values()];
+  const inviteDetails = new Map(inviteList.map(invite => [invite.code, invite]));
+  const uses = new Map(
+    inviteList.map(invite => [invite.code, Number(invite.uses || 0)])
+  );
+
+  let vanityUses = null;
+  if (guild.features.includes('VANITY_URL')) {
+    try {
+      vanityUses = Number((await guild.fetchVanityData()).uses || 0);
+    } catch {
+      // Vanity URL tracking is optional; regular invite attribution still works.
+    }
+  }
+
+  return {
+    uses,
+    inviteDetails,
+    vanityUses,
+    metadataAvailable: inviteList.every(invite => typeof invite.uses === 'number')
+  };
+}
+
+async function cacheGuildInvites(guild) {
+  try {
+    const snapshot = await readInviteSnapshot(guild);
+    inviteSnapshots.set(guild.id, snapshot);
+    if (!snapshot.metadataAvailable) {
+      console.warn(`Invite usage metadata is unavailable in ${guild.name}; grant the bot Manage Server to enable attribution.`);
+    }
+  } catch (error) {
+    console.warn(`Invite tracking is unavailable in ${guild.name}: ${error.message}`);
+  }
+}
+
+async function identifyUsedInvite(guild) {
+  const previous = inviteSnapshots.get(guild.id);
+  let current;
+
+  try {
+    current = await readInviteSnapshot(guild);
+  } catch (error) {
+    console.warn(`Could not read invites in ${guild.name}: ${error.message}`);
+    return claimPendingInvite(guild.id) || { inviterId: null, code: null, source: 'unknown' };
+  }
+
+  inviteSnapshots.set(guild.id, current);
+  if (!current.metadataAvailable || (previous && !previous.metadataAvailable)) {
+    return claimPendingInvite(guild.id) || { inviterId: null, code: null, source: 'unknown' };
+  }
+
+  if (previous) {
+    const cutoff = Date.now() - 30_000;
+    const pending = (pendingInviteUses.get(guild.id) || [])
+      .filter(item => item.detectedAt >= cutoff);
+
+    for (const [code, uses] of current.uses) {
+      const increase = Math.max(0, uses - (previous.uses.get(code) || 0));
+      const invite = current.inviteDetails.get(code);
+      for (let index = 0; index < increase; index += 1) {
+        pending.push({
+          inviterId: invite?.inviter?.id || null,
+          code,
+          source: 'invite',
+          detectedAt: Date.now()
+        });
+      }
+    }
+
+    const vanityIncrease = current.vanityUses !== null && previous.vanityUses !== null
+      ? Math.max(0, current.vanityUses - previous.vanityUses)
+      : 0;
+    for (let index = 0; index < vanityIncrease; index += 1) {
+      pending.push({
+        inviterId: null,
+        code: guild.vanityURLCode || null,
+        source: 'vanity',
+        detectedAt: Date.now()
+      });
+    }
+
+    if (pending.length) pendingInviteUses.set(guild.id, pending);
+    else pendingInviteUses.delete(guild.id);
+  }
+
+  return claimPendingInvite(guild.id) || { inviterId: null, code: null, source: 'unknown' };
+}
+
+function queueInviteTask(guildId, task) {
+  const previous = inviteQueues.get(guildId) || Promise.resolve();
+  const queued = previous.catch(() => {}).then(task);
+  inviteQueues.set(guildId, queued);
+  queued.finally(() => {
+    if (inviteQueues.get(guildId) === queued) inviteQueues.delete(guildId);
+  }).catch(() => {});
+  return queued;
+}
+
+function inviteDisplay(guildId, inviterId) {
+  if (!inviterId) return { joins: 0, leaves: 0, active: 0 };
+  return getInviteCounts(guildId, inviterId);
+}
+
+function renderMemberTemplate(template, member, settings, inviterId) {
+  const counts = inviteDisplay(member.guild.id, inviterId);
+  const inviter = inviterId ? `<@${inviterId}>` : 'Unknown';
+  const values = {
+    username: member.user.username,
+    user: member.user.username,
+    displayname: member.displayName,
+    mention: `<@${member.id}>`,
+    server: member.guild.name,
+    guild: member.guild.name,
+    member_count: String(member.guild.memberCount),
+    inviter,
+    invites: String(counts.joins),
+    active_invites: String(counts.active),
+    emoji: settings.emoji || '',
+    avatar: member.displayAvatarURL({ size: 1024 })
+  };
+
+  return Object.entries(values).reduce(
+    (text, [key, value]) => text.replaceAll(`{${key}}`, value),
+    template || ''
+  );
+}
+
+function buildMemberEmbed(member, settings, inviterId) {
+  const title = renderMemberTemplate(settings.title, member, settings, inviterId).trim();
+  const description = renderMemberTemplate(settings.message, member, settings, inviterId).trim();
+  const color = normalizeHexColor(settings.color) || '22C7D6';
+  const embed = new EmbedBuilder()
+    .setColor(parseInt(color, 16))
+    .setDescription(description.slice(0, 4000))
+    .setThumbnail(member.displayAvatarURL({ size: 512 }));
+
+  if (title) embed.setTitle(title.slice(0, 256));
+  if (settings.imageUrl) embed.setImage(settings.imageUrl);
+  return embed;
+}
+
+async function sendMemberEmbed(member, kind, inviterId = null) {
+  const settings = getGuildCommunity(member.guild.id)[kind];
+  if (!settings?.channelId || !settings.message) return false;
+
+  const channel = member.guild.channels.cache.get(settings.channelId) ||
+    await member.guild.channels.fetch(settings.channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return false;
+
+  await channel.send({
+    embeds: [buildMemberEmbed(member, settings, inviterId)],
+    allowedMentions: { users: [member.id], parse: [] }
+  });
+  return true;
+}
+
+async function sendInviteLog(member, attribution, inviterId) {
+  const channelId = getGuildCommunity(member.guild.id).invites.logChannelId;
+  if (!channelId) return;
+
+  const channel = member.guild.channels.cache.get(channelId) ||
+    await member.guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return;
+
+  const counts = inviteDisplay(member.guild.id, inviterId);
+  const source = attribution.source === 'vanity'
+    ? 'the vanity URL'
+    : attribution.code
+      ? `invite \`${attribution.code}\``
+      : 'an unknown invite';
+  const inviter = inviterId ? `<@${inviterId}>` : 'Unknown';
+
+  await channel.send({
+    embeds: [new EmbedBuilder()
+      .setColor(0x22c7d6)
+      .setTitle('📨 Member joined')
+      .setDescription(`${member} joined using ${source}. Invited by ${inviter} · ${counts.joins} total, ${counts.active} active invites.`)
+      .setThumbnail(member.displayAvatarURL({ size: 256 }))],
+    allowedMentions: { users: [member.id, ...(inviterId ? [inviterId] : [])], parse: [] }
+  });
+}
+
+async function processMemberJoin(member) {
+  const attribution = await identifyUsedInvite(member.guild);
+  const invites = getGuildCommunity(member.guild.id).invites;
+  const inviterId = attribution.inviterId;
+
+  if (inviterId) {
+    const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0 };
+    totals.joins = Number(totals.joins || 0) + 1;
+  } else {
+    invites.unattributedJoins = Number(invites.unattributedJoins || 0) + 1;
+  }
+
+  invites.invitees[member.id] = {
+    inviterId,
+    code: attribution.code,
+    source: attribution.source,
+    joinedAt: Date.now()
+  };
+  saveCommunitySettings();
+
+  try {
+    await sendMemberEmbed(member, 'welcome', inviterId);
+  } catch (error) {
+    console.error(`Could not send welcome embed in ${member.guild.name}:`, error.message);
+  }
+  try {
+    await sendInviteLog(member, attribution, inviterId);
+  } catch (error) {
+    console.error(`Could not send invite log in ${member.guild.name}:`, error.message);
+  }
+}
+
+async function processMemberLeave(member) {
+  const invites = getGuildCommunity(member.guild.id).invites;
+  const tracked = invites.invitees[member.id];
+  const inviterId = tracked?.inviterId || null;
+
+  if (tracked) {
+    if (inviterId) {
+      const totals = invites.totals[inviterId] ||= { joins: 0, leaves: 0 };
+      totals.leaves = Number(totals.leaves || 0) + 1;
+    }
+    delete invites.invitees[member.id];
+    saveCommunitySettings();
+  }
+
+  try {
+    await sendMemberEmbed(member, 'leave', inviterId);
+  } catch (error) {
+    console.error(`Could not send leave message in ${member.guild.name}:`, error.message);
+  }
+}
+
+async function configureMemberEmbed(interaction, kind) {
+  if (!isAdmin(interaction)) return deny(interaction);
+  if (!interaction.guildId) return deny(interaction, 'Use this command inside a server.');
+
+  const channel = interaction.options.getChannel('channel');
+  const message = interaction.options.getString('message').trim();
+  const title = interaction.options.getString('title')?.trim() || '';
+  const imageUrl = interaction.options.getString('image_url')?.trim() || '';
+  const colorInput = interaction.options.getString('color');
+  const color = colorInput ? normalizeHexColor(colorInput) : '22C7D6';
+  const emoji = interaction.options.getString('emoji')?.trim() || '';
+
+  if (!message) return interaction.reply({ content: 'Enter an embed message.', flags: MessageFlags.Ephemeral });
+  if (!color) return interaction.reply({ content: 'Use a six-digit HEX color, such as `#22C7D6`.', flags: MessageFlags.Ephemeral });
+
+  if (imageUrl) {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(imageUrl);
+    } catch {
+      return interaction.reply({ content: 'Enter a valid direct image URL or Discord upload link.', flags: MessageFlags.Ephemeral });
+    }
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return interaction.reply({ content: 'Image URLs must start with `http://` or `https://`.', flags: MessageFlags.Ephemeral });
+    }
+  }
+
+  const settings = getGuildCommunity(interaction.guildId);
+  settings[kind] = {
+    channelId: channel.id,
+    title,
+    message,
+    imageUrl,
+    color,
+    emoji
+  };
+  saveCommunitySettings();
+
+  return interaction.reply({
+    content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} embed saved for <#${channel.id}>. Use placeholders such as \`{username}\`, \`{mention}\`, \`{member_count}\`, \`{inviter}\`, \`{invites}\`, and \`{emoji}\`.`,
+    flags: MessageFlags.Ephemeral
+  });
+}
+
 // Bot ready
 
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
   console.log(`Discord bot logged in as ${client.user.tag}`);
+  await Promise.allSettled(
+    [...client.guilds.cache.values()].map(guild => cacheGuildInvites(guild))
+  );
+});
+
+client.on('guildCreate', guild => {
+  cacheGuildInvites(guild);
+});
+
+client.on('inviteCreate', invite => {
+  const snapshot = inviteSnapshots.get(invite.guild?.id);
+  if (!snapshot || !invite.code) return;
+  snapshot.uses.set(invite.code, Number(invite.uses || 0));
+  snapshot.inviteDetails.set(invite.code, invite);
+});
+
+client.on('inviteDelete', invite => {
+  const snapshot = inviteSnapshots.get(invite.guild?.id);
+  if (!snapshot || !invite.code) return;
+  snapshot.uses.delete(invite.code);
+  snapshot.inviteDetails.delete(invite.code);
+});
+
+client.on('guildMemberAdd', member => {
+  queueInviteTask(member.guild.id, () => processMemberJoin(member))
+    .catch(error => console.error(`Could not process member join in ${member.guild.name}:`, error.message));
+});
+
+client.on('guildMemberRemove', member => {
+  queueInviteTask(member.guild.id, () => processMemberLeave(member))
+    .catch(error => console.error(`Could not process member leave in ${member.guild.name}:`, error.message));
 });
 
 // Slash commands
@@ -783,6 +1153,109 @@ client.on('interactionCreate', async i => {
       return i.reply({ content: `Custom embed sent to ${channel}.`, flags: MessageFlags.Ephemeral });
     }
 
+    if (command === 'welcome' || command === 'leave') {
+      if (!isAdmin(i)) return deny(i);
+      if (!i.guildId) return deny(i, 'Use this command inside a server.');
+
+      const kind = command;
+      const action = i.options.getSubcommand();
+
+      if (action === 'set') return configureMemberEmbed(i, kind);
+
+      const settings = getGuildCommunity(i.guildId);
+      const current = settings[kind];
+
+      if (action === 'disable') {
+        delete settings[kind];
+        saveCommunitySettings();
+        return i.reply({
+          content: `${kind === 'welcome' ? 'Welcome' : 'Leave'} messages are disabled.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'show') {
+        if (!current) {
+          return i.reply({ content: `No ${kind} embed is configured. Use /${kind} set to create one.`, flags: MessageFlags.Ephemeral });
+        }
+
+        const savedMessage = current.message.length > 1000
+          ? `${current.message.slice(0, 997)}...`
+          : current.message;
+        return i.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(parseInt(normalizeHexColor(current.color) || '22C7D6', 16))
+            .setTitle(`${kind === 'welcome' ? 'Welcome' : 'Leave'} embed settings`)
+            .setDescription(`**Channel:** <#${current.channelId}>`)
+            .addFields(
+              { name: 'Title', value: (current.title || '(none)').slice(0, 1024) },
+              { name: 'Message', value: savedMessage || '(empty)' },
+              ...(current.imageUrl ? [{ name: 'Image URL', value: current.imageUrl.slice(0, 1024) }] : []),
+              ...(current.emoji ? [{ name: 'Emoji', value: current.emoji.slice(0, 1024) }] : [])
+            )],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (action === 'test') {
+        if (!current) {
+          return i.reply({ content: `Set up the ${kind} embed first with /${kind} set.`, flags: MessageFlags.Ephemeral });
+        }
+
+        const member = await i.guild.members.fetch(i.user.id);
+        const sent = await sendMemberEmbed(member, kind);
+        return i.reply({
+          content: sent ? `Preview sent to <#${current.channelId}>.` : 'I could not send the preview. Check that the configured channel still exists and that I can send embeds there.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    }
+
+    if (command === 'invites') {
+      if (!i.guildId) return deny(i, 'Use this command inside a server.');
+
+      const action = i.options.getSubcommand();
+      const invites = getGuildCommunity(i.guildId).invites;
+
+      if (action === 'check') {
+        const user = i.options.getUser('user') || i.user;
+        const counts = getInviteCounts(i.guildId, user.id);
+        return i.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0x22c7d6)
+            .setTitle(`Invite stats · ${user.username}`)
+            .setDescription(`**Total joins:** ${counts.joins}\n**Still in server:** ${counts.active}\n**Left:** ${counts.leaves}`)
+            .setThumbnail(user.displayAvatarURL({ size: 256 }))]
+        });
+      }
+
+      if (action === 'leaderboard') {
+        const rows = Object.entries(invites.totals)
+          .map(([userId, totals]) => ({ userId, ...getInviteCounts(i.guildId, userId) }))
+          .filter(row => row.joins > 0)
+          .sort((left, right) => right.active - left.active || right.joins - left.joins)
+          .slice(0, 10);
+
+        return i.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0x22c7d6)
+            .setTitle('🏆 Invite Leaderboard')
+            .setDescription(rows.length
+              ? rows.map((row, index) => `**${index + 1}.** <@${row.userId}> — **${row.active}** active (${row.joins} joined, ${row.leaves} left)`).join('\n')
+              : 'No invite joins have been tracked yet.')],
+          allowedMentions: { parse: [] }
+        });
+      }
+
+      if (action === 'logchannel') {
+        if (!isAdmin(i)) return deny(i);
+        const channel = i.options.getChannel('channel');
+        invites.logChannelId = channel.id;
+        saveCommunitySettings();
+        return i.reply({ content: `Invite join logs will be sent to ${channel}.`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
     if (command === 'help') {
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
@@ -792,6 +1265,7 @@ client.on('interactionCreate', async i => {
           { name: 'Account linking', value: '`/minelink` · `/mineunlink` · `/mineaccount`' },
           { name: 'Stats and economy', value: '`/minestats` · `/mineleaderboard` · `/minebalance`' },
           { name: 'Staff', value: '`/announce` · `/addcoin` · `/takecoin` · `/givecoins` · `/takecoins`' },
+          { name: 'Community', value: '`/invites check` · `/invites leaderboard` · `/welcome set` · `/leave set` (welcome/leave setup is staff-only)' },
           { name: 'Moderation', value: '`/minekick` · `/mineban` · `/minetempban` · `/mineunban` · `/minestatus`' },
           { name: 'Custom embeds and auto-replies', value: '`/custommsg` · `/autoresponder add/edit/list/remove` for normal replies · `/autoresponder embed add/edit/list/remove` for embedded replies · use each set’s `show`, `showraw`, `editreply`, `editmatchmode`, `help`, and `panel` subcommands as needed.' }
         );

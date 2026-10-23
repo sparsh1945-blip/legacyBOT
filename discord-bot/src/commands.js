@@ -26,6 +26,63 @@ const reasonOption = name =>
     .setDescription('Reason for this action')
     .setRequired(true);
 
+const memberMessageCommand = (name, description) =>
+  new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description)
+    .addSubcommand(s =>
+      s.setName('set')
+        .setDescription('Create or edit the member message')
+        .addChannelOption(o =>
+          o.setName('channel')
+            .setDescription('Text channel where the embed will be sent')
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        )
+        .addStringOption(o =>
+          o.setName('message')
+            .setDescription('Embed text; animated emojis and placeholders are supported')
+            .setRequired(true)
+            .setMaxLength(4000)
+        )
+        .addStringOption(o =>
+          o.setName('title')
+            .setDescription('Optional embed title template')
+            .setRequired(false)
+            .setMaxLength(256)
+        )
+        .addStringOption(o =>
+          o.setName('image_url')
+            .setDescription('Optional direct image URL, including a Discord upload link')
+            .setRequired(false)
+            .setMaxLength(2000)
+        )
+        .addStringOption(o =>
+          o.setName('color')
+            .setDescription('Optional embed color, e.g. #22C7D6')
+            .setRequired(false)
+            .setMaxLength(7)
+        )
+        .addStringOption(o =>
+          o.setName('emoji')
+            .setDescription('Optional emoji for the {emoji} placeholder; custom animated emojis work')
+            .setRequired(false)
+            .setMaxLength(100)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('test')
+        .setDescription('Send a preview to the configured channel')
+    )
+    .addSubcommand(s =>
+      s.setName('show')
+        .setDescription('Show the saved channel and message settings')
+    )
+    .addSubcommand(s =>
+      s.setName('disable')
+        .setDescription('Turn off this member message')
+    );
+
 const matchModeChoices = [
   { name: 'Contains phrase', value: 'contains' },
   { name: 'Exact message', value: 'exact' },
@@ -159,6 +216,37 @@ export const commands = [
   new SlashCommandBuilder()
     .setName('minestatus')
     .setDescription('Show server heartbeat status'),
+
+  memberMessageCommand('welcome', 'Configure the server welcome embed'),
+
+  memberMessageCommand('leave', 'Configure the server leave embed'),
+
+  new SlashCommandBuilder()
+    .setName('invites')
+    .setDescription('Check invite totals and server invite leaderboard')
+    .addSubcommand(s =>
+      s.setName('check')
+        .setDescription('Show invite totals for you or another member')
+        .addUserOption(o =>
+          o.setName('user')
+            .setDescription('Member whose invite totals to view')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName('leaderboard')
+        .setDescription('Show the top inviters in this server')
+    )
+    .addSubcommand(s =>
+      s.setName('logchannel')
+        .setDescription('Set the staff invite log channel')
+        .addChannelOption(o =>
+          o.setName('channel')
+            .setDescription('Text channel for join and invite attribution logs')
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        )
+    ),
 
   new SlashCommandBuilder()
     .setName('custommsg')
