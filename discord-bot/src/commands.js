@@ -32,6 +32,11 @@ const matchModeChoices = [
   { name: 'Ends with', value: 'ends_with' }
 ];
 
+const replyTypeChoices = [
+  { name: 'Embedded message', value: 'embed' },
+  { name: 'Normal message', value: 'text' }
+];
+
 export const commands = [
   new SlashCommandBuilder()
     .setName('help')
@@ -193,7 +198,7 @@ export const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s =>
       s.setName('add')
-        .setDescription('Add a colorful embedded auto-reply')
+        .setDescription('Add an embedded or normal text auto-reply')
         .addStringOption(o =>
           o.setName('trigger')
             .setDescription('Word or phrase that triggers the reply')
@@ -211,6 +216,12 @@ export const commands = [
             .setDescription('How a message must match this trigger')
             .setRequired(false)
             .addChoices(...matchModeChoices)
+        )
+        .addStringOption(o =>
+          o.setName('replytype')
+            .setDescription('Send the reply as an embed or normal text')
+            .setRequired(false)
+            .addChoices(...replyTypeChoices)
         )
         .addStringOption(o =>
           o.setName('title')
@@ -239,6 +250,12 @@ export const commands = [
             .setDescription('New reply text')
             .setRequired(true)
             .setMaxLength(2000)
+        )
+        .addStringOption(o =>
+          o.setName('replytype')
+            .setDescription('Send the reply as an embed or normal text')
+            .setRequired(false)
+            .addChoices(...replyTypeChoices)
         )
         .addStringOption(o =>
           o.setName('new-trigger')
@@ -273,6 +290,12 @@ export const commands = [
             .setDescription('New reply text')
             .setRequired(true)
             .setMaxLength(2000)
+        )
+        .addStringOption(o =>
+          o.setName('replytype')
+            .setDescription('Send the reply as an embed or normal text')
+            .setRequired(false)
+            .addChoices(...replyTypeChoices)
         )
     )
     .addSubcommand(s =>

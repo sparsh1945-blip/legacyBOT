@@ -207,6 +207,7 @@ function validTrigger(trigger) {
 }
 
 const AUTO_REPLY_MATCH_MODES = new Set(['contains', 'exact', 'starts_with', 'ends_with']);
+const AUTO_REPLY_TYPES = new Set(['embed', 'text']);
 
 function matchModeLabel(mode) {
   return ({
@@ -215,6 +216,10 @@ function matchModeLabel(mode) {
     starts_with: 'Starts with',
     ends_with: 'Ends with'
   })[mode] || 'Contains phrase';
+}
+
+function replyTypeLabel(type) {
+  return type === 'text' ? 'Normal message' : 'Embedded message';
 }
 
 function normalizeHexColor(value, fallback = '22C7D6') {
@@ -265,7 +270,6 @@ function customEmbed(item) {
 
   return new EmbedBuilder()
     .setColor(parseInt(hex, 16))
-    .setAuthor({ name: 'LEGACY MC • AUTO-REPLY' })
     .setTitle(item.title || '✨ Auto-Reply')
     .setDescription(reply)
     .addFields({ name: '🔑 Trigger', value: `\`${item.trigger || 'custom'}\``, inline: true })
@@ -273,11 +277,21 @@ function customEmbed(item) {
     .setTimestamp();
 }
 
+function autoReplyPayload(item) {
+  const reply = item.reply || item.body || 'This auto-reply has no message yet.';
+
+  if (item.replyType === 'text') {
+    return { content: reply, allowedMentions: { parse: [] } };
+  }
+
+  return { embeds: [customEmbed(item)] };
+}
+
 function customPanel(messages) {
   const entries = Object.entries(messages);
 
   const description = entries.length
-    ? entries.map(([key, item]) => `• **${key.slice(0, 80)}** — ${(item.reply || item.title || 'Embed reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
+    ? entries.map(([key, item]) => `• **${key.slice(0, 80)}** — ${replyTypeLabel(item.replyType || 'embed')} — ${(item.reply || item.body || item.title || 'Reply').replace(/\s+/gu, ' ').slice(0, 40)}`).join('\n')
     : 'No auto-replies in this draft. Select Add Reply to create one.';
 
   return new EmbedBuilder()
@@ -373,11 +387,21 @@ function customModal(customId, item = {}) {
     .setRequired(true)
     .setValue(item.color || '22C7D6');
 
+  const replyType = new TextInputBuilder()
+    .setCustomId('replytype')
+    .setLabel('Reply type: embed or text')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(5)
+    .setRequired(true)
+    .setPlaceholder('embed or text')
+    .setValue(item.replyType || 'embed');
+
   modal.addComponents(
     new ActionRowBuilder().addComponents(trigger),
     new ActionRowBuilder().addComponents(title),
     new ActionRowBuilder().addComponents(body),
-    new ActionRowBuilder().addComponents(color)
+    new ActionRowBuilder().addComponents(color),
+    new ActionRowBuilder().addComponents(replyType)
   );
 
   return modal;
@@ -442,14 +466,15 @@ client.on('interactionCreate', async i => {
         const trigger = normalizeTrigger(i.options.getString('trigger'));
         const reply = i.options.getString('reply').trim();
         const matchMode = i.options.getString('matchmode') || 'contains';
+        const replyType = i.options.getString('replytype') || 'embed';
         const title = i.options.getString('title')?.trim() || '✨ Auto-Reply';
         const color = normalizeHexColor(i.options.getString('color'));
 
-        if (!validTrigger(trigger) || !reply || !AUTO_REPLY_MATCH_MODES.has(matchMode)) {
+        if (!validTrigger(trigger) || !reply || !AUTO_REPLY_MATCH_MODES.has(matchMode) || !AUTO_REPLY_TYPES.has(replyType)) {
           return i.reply({
             embeds: [autoResponderNotice(
               '⚠️ Check Your Auto-Reply',
-              'Enter a trigger word or phrase (up to 100 characters) and a non-empty reply.',
+              'Enter a trigger word or phrase, a non-empty reply, and a supported match mode and reply type.',
               0xe74c3c
             )],
             flags: MessageFlags.Ephemeral
@@ -477,13 +502,13 @@ client.on('interactionCreate', async i => {
           });
         }
 
-        setAutoReply(guildMessages, trigger, { trigger, reply, title, color, matchMode });
+        setAutoReply(guildMessages, trigger, { trigger, reply, title, color, matchMode, replyType });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
         return i.reply({
           embeds: [autoResponderNotice(
             '✅ Auto-Reply Added',
-            `**Trigger:** \`${trigger}\`\n**Match mode:** ${matchModeLabel(matchMode)}\n**Reply:** ${reply.slice(0, 500)}\n**Appearance:** ${title} · \`#${color}\`\n\nIt is active now.`,
+            `**Trigger:** \`${trigger}\`\n**Match mode:** ${matchModeLabel(matchMode)}\n**Reply type:** ${replyTypeLabel(replyType)}\n**Reply:** ${reply.slice(0, 500)}\n${replyType === 'embed' ? `**Appearance:** ${title} · \`#${color}\`\n` : ''}\nIt is active now.`,
             parseInt(color, 16)
           )],
           flags: MessageFlags.Ephemeral
@@ -511,10 +536,11 @@ client.on('interactionCreate', async i => {
 
         const title = i.options.getString('title')?.trim() || existing.title || '✨ Auto-Reply';
         const color = normalizeHexColor(i.options.getString('color'), existing.color || '22C7D6');
+        const replyType = i.options.getString('replytype') || existing.replyType || 'embed';
 
-        if (!color) {
+        if (!color || !AUTO_REPLY_TYPES.has(replyType)) {
           return i.reply({
-            embeds: [autoResponderNotice('🎨 Invalid HEX Color', 'Use six HEX digits, such as `#22C7D6`.', 0xe74c3c)],
+            embeds: [autoResponderNotice('⚠️ Invalid Reply Settings', 'Choose a valid reply type and use a six-digit HEX color such as `#22C7D6`.', 0xe74c3c)],
             flags: MessageFlags.Ephemeral
           });
         }
@@ -534,6 +560,7 @@ client.on('interactionCreate', async i => {
           body: reply,
           title,
           color,
+          replyType,
           matchMode: existing.matchMode || 'contains'
         });
         saveGuildAutoReplies(i.guildId, guildMessages);
@@ -559,13 +586,18 @@ client.on('interactionCreate', async i => {
           return i.reply({ content: 'Enter a non-empty reply.', flags: MessageFlags.Ephemeral });
         }
 
-        setAutoReply(guildMessages, trigger, { ...existing, trigger, reply, body: reply });
+        const replyType = i.options.getString('replytype') || existing.replyType || 'embed';
+        if (!AUTO_REPLY_TYPES.has(replyType)) {
+          return i.reply({ content: 'Choose either an embedded or normal text reply.', flags: MessageFlags.Ephemeral });
+        }
+
+        setAutoReply(guildMessages, trigger, { ...existing, trigger, reply, body: reply, replyType });
         saveGuildAutoReplies(i.guildId, guildMessages);
 
         return i.reply({
           embeds: [autoResponderNotice(
             '✏️ Auto-Reply Updated',
-            `**Trigger:** \`${trigger}\`\n**Reply:** ${reply.slice(0, 1000)}`,
+            `**Trigger:** \`${trigger}\`\n**Reply type:** ${replyTypeLabel(replyType)}\n**Reply:** ${reply.slice(0, 1000)}`,
             parseInt(normalizeHexColor(existing.color) || '22C7D6', 16)
           )],
           flags: MessageFlags.Ephemeral
@@ -641,11 +673,11 @@ client.on('interactionCreate', async i => {
           embeds: [
             new EmbedBuilder()
               .setColor(parseInt(color, 16))
-              .setAuthor({ name: 'LEGACY MC • AUTO-RESPONDER' })
               .setTitle(item.title || '✨ Auto-Reply')
               .setDescription(reply.slice(0, 4000))
               .addFields(
                 { name: 'Trigger', value: trigger.slice(0, 100), inline: true },
+                { name: 'Reply type', value: replyTypeLabel(item.replyType || 'embed'), inline: true },
                 { name: 'Match mode', value: matchModeLabel(item.matchMode || 'contains'), inline: true },
                 { name: 'Embed color', value: `#${color}`, inline: true }
               )
@@ -668,7 +700,7 @@ client.on('interactionCreate', async i => {
           const reply = (item.reply || item.body || 'No reply text').replace(/\s+/gu, ' ');
           embed.addFields({
             name: `🔑 ${trigger}`.slice(0, 256),
-            value: `✨ ${(item.title || 'Auto-Reply').slice(0, 28)}\n🎯 ${matchModeLabel(item.matchMode || 'contains')}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\``,
+            value: `📨 ${replyTypeLabel(item.replyType || 'embed')}\n🎯 ${matchModeLabel(item.matchMode || 'contains')}\n💬 ${reply.slice(0, 40)}${reply.length > 40 ? '…' : ''}${item.replyType === 'text' ? '' : `\n🎨 \`#${normalizeHexColor(item.color) || '22C7D6'}\``}`,
             inline: true
           });
         }
@@ -688,11 +720,11 @@ client.on('interactionCreate', async i => {
           .addFields(
             {
               name: '➕ Add a reply',
-              value: '`/autoresponder add`\n**Required:** `trigger`, `reply`\n**Optional:** `matchmode`, `title`, `color`'
+              value: '`/autoresponder add`\n**Required:** `trigger`, `reply`\n**Optional:** `replytype` (`embed` or `text`), `matchmode`, `title`, `color`'
             },
             {
               name: '✏️ Edit a reply',
-              value: '`/autoresponder editreply` changes only the reply.\n`/autoresponder edit` can also rename the trigger or change title and color.'
+              value: '`/autoresponder editreply` changes the reply and can switch between embed and text.\n`/autoresponder edit` can also rename the trigger or change type, title, and color.'
             },
             {
               name: '🧰 More options',
@@ -1125,6 +1157,7 @@ client.on('interactionCreate', async i => {
       const title = i.fields.getTextInputValue('title').trim();
       const body = i.fields.getTextInputValue('body').trim();
       const color = i.fields.getTextInputValue('color').trim().replace(/^#/, '');
+      const replyType = i.fields.getTextInputValue('replytype').trim().toLowerCase();
 
       if (!validTrigger(trigger)) {
         return i.reply({
@@ -1133,9 +1166,15 @@ client.on('interactionCreate', async i => {
         });
       }
 
-      if (!title || !body || !/^[0-9a-f]{6}$/i.test(color)) {
+      if (
+        !title ||
+        !body ||
+        !/^[0-9a-f]{6}$/i.test(color) ||
+        !AUTO_REPLY_TYPES.has(replyType) ||
+        (replyType === 'text' && body.length > 2000)
+      ) {
         return i.reply({
-          content: 'Enter a title, message and valid six-digit HEX color.',
+          content: 'Enter a title, message, valid six-digit HEX color, and reply type (`embed` or `text`). Normal text replies must be 2,000 characters or fewer.',
           flags: MessageFlags.Ephemeral
         });
       }
@@ -1174,6 +1213,7 @@ client.on('interactionCreate', async i => {
         title,
         body,
         color: color.toUpperCase(),
+        replyType,
         matchMode
       });
 
@@ -1247,7 +1287,7 @@ client.on('messageCreate', async message => {
   const [, item] = matches;
 
   try {
-    await message.channel.send({ embeds: [customEmbed(item)] });
+    await message.channel.send(autoReplyPayload(item));
   } catch (error) {
     console.error('Could not send keyword response:', error.message);
   }
